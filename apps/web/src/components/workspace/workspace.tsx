@@ -11,7 +11,7 @@ import { DirectoryLoaded, GroupsContext, PeopleContext, useDirectory } from "@/h
 import { useHuddle } from "@/hooks/use-huddle";
 import { useMounted } from "@/hooks/use-mounted";
 import { useReleaseCheck } from "@/hooks/use-release-check";
-import { isDue, useReminders } from "@/hooks/use-reminders";
+import { DismissReminder, isDue, useReminders } from "@/hooks/use-reminders";
 import { useSidebar } from "@/hooks/use-sidebar";
 import { ApiError, dismissInvitation, isSignedOut, startDirect } from "@/lib/api";
 import { hearHuddleEnd, leaveHuddle, muteHuddle } from "@/lib/huddle-store";
@@ -272,9 +272,10 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   // workspace socket says has changed.
   const directory = useDirectory();
   // Reminders of theirs, which the workspace socket tells this tab about as each one comes due or is
-  // dismissed in another tab. Declared before the sidebar, whose socket hands it both.
-  const { reminders, cameDue, cameGone, dismiss: dismissReminder } = useReminders();
-  const { list, answered, change: changeRooms, refresh, askForRoom } = useSidebar(me, onSessionChanged, directory, accountHeard, shownRoomGone, cameDue, cameGone);
+  // dismissed in another tab. Declared before the sidebar, whose socket hands it these and reloads
+  // them each time it connects.
+  const { reminders, cameDue, cameGone, dismiss: dismissReminder, load: reloadReminders } = useReminders();
+  const { list, answered, change: changeRooms, refresh, askForRoom } = useSidebar(me, onSessionChanged, directory, accountHeard, shownRoomGone, cameDue, cameGone, reloadReminders);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // New direct message, while it's open, with the link that opened it, which gets focus back, or null
   // when its address did.
@@ -901,7 +902,8 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
                 roomName={roomName}
                 onOpen={() => {
                   navigate(dueReminder.parentId === undefined ? messagePath(dueReminder.roomId, dueReminder.messageId) : threadPath(dueReminder.roomId, dueReminder.parentId, dueReminder.messageId));
-                  void dismissReminder(dueReminder.id);
+                  // The page may hold the person with unsaved changes, so it's done with only once they've gone there.
+                  afterNavigating(() => void dismissReminder(dueReminder.id));
                 }}
                 onDone={() => void dismissReminder(dueReminder.id)}
               />
@@ -917,7 +919,9 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
         <DirectoryLoaded value={directory.loaded}>
           <SettingsLayout value={settings}>
             <OpenSearchContext value={openSearch}>
-              <HuddlesContext value={huddles}>{layout}</HuddlesContext>
+              <HuddlesContext value={huddles}>
+                <DismissReminder value={dismissReminder}>{layout}</DismissReminder>
+              </HuddlesContext>
             </OpenSearchContext>
           </SettingsLayout>
         </DirectoryLoaded>
