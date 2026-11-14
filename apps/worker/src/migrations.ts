@@ -171,6 +171,20 @@ export function migrate(storage: DurableObjectStorage, scope: Scope): void {
     name TEXT UNIQUE,
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`);
+  // This copy's early deploys numbered reminders 0055 and statuses 0056, which upstream's apps and
+  // agent tools then took. A storage that ran them under the old names replays 0061/0062 onto tables
+  // it already has and stops; the record follows the table, not the number it once wore.
+  for (const [was, now] of [
+    ["0055_reminders.sql", "0061_reminders.sql"],
+    ["0056_statuses.sql", "0062_statuses.sql"],
+  ] as const) {
+    storage.sql.exec(
+      "UPDATE d1_migrations SET name = ? WHERE name = ? AND NOT EXISTS (SELECT 1 FROM (SELECT name FROM d1_migrations WHERE name = ?) AS there)",
+      now,
+      was,
+      now,
+    );
+  }
   const applied = new Set(storage.sql.exec<{ name: string }>("SELECT name FROM d1_migrations").toArray().map((row) => row.name));
   for (const migration of scope === "search" ? SEARCH_MIGRATIONS : MIGRATIONS) {
     if (migration.scope !== scope || applied.has(migration.name)) continue;
