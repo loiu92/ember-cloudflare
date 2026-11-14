@@ -543,7 +543,7 @@ export class MessageStore {
           now,
           seq,
           posted ? JSON.stringify(posted.file) : null,
-          cards ? JSON.stringify(cards) : null,
+          body.cards ? JSON.stringify(body.cards) : null,
           inThread?.parent.id ?? null,
           inRoom ? 1 : 0,
         ),
