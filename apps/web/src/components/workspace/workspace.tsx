@@ -303,8 +303,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
       if (dndsHeard.current === heard) hearDnd(until);
     };
   }, [hearDnd]);
-  const { list, answered, change: changeRooms, refresh, askForRoom } = useSidebar(me, onSessionChanged, directory, accountHeard, shownRoomGone, hearDnd);
-  const { list, answered, change: changeRooms, refresh, askForRoom } = useSidebar(me, onSessionChanged, directory, accountHeard, shownRoomGone, cameDue, cameGone, setDndUntil, reloadReminders);
+  const { list, answered, change: changeRooms, refresh, askForRoom } = useSidebar(me, onSessionChanged, directory, accountHeard, shownRoomGone, cameDue, cameGone, hearDnd, reloadReminders);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // New direct message, while it's open, with the link that opened it, which gets focus back, or null
   // when its address did.
