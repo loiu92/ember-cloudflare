@@ -229,8 +229,9 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
         // The hush too, which the section saves, and the rail shows by its crescent, unless one was
         // heard while the page was loading, which may have read before it did.
         heard(answer.profile.dndUntil ?? null);
-        // The same goes for the Apps section, which signing out there changes.
-        setApps(answer.profile.apps);
+        // The same goes for the Apps section, which signing out there changes. A profile of a page that
+        // asks none of the apps keeps none, so an answer without them leaves the list empty.
+        setApps(answer.profile.apps ?? []);
       },
       (error: unknown) => {
         // A page left before its profile loads only reports a session that's ended, which goes to sign in.
