@@ -145,7 +145,8 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | | Ember | Slack |
 |---|---|---|
 | **Rooms, private rooms and DMs** | ✅ | ✅ |
-| **Threads** | ✅ with Also send to the room | ✅ with Also send to the channel |
+| **Threads** |
+| **A DM with yourself** | ✅ a note-to-self space, one per person | ✅ | ✅ with Also send to the room | ✅ with Also send to the channel |
 | **Mentions, quotes, reactions and edits** | ✅ react with any emoji or a few words | ✅ plus custom emoji |
 | **Rich text, code blocks and link previews** | ✅ | ✅ |
 | **Files** | ✅ up to 250 MB each | ✅ up to 1 GB each |
