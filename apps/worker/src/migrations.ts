@@ -66,6 +66,7 @@ import appSignIns from "../migrations/0065_app_sign_ins.sql";
 import appSignInClients from "../migrations/0066_app_sign_in_clients.sql";
 import appScopeWanted from "../migrations/0067_app_scope_wanted.sql";
 import ownAppSignIns from "../migrations/0068_own_app_sign_ins.sql";
+import guests from "../migrations/0069_guests.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -158,6 +159,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0066_app_sign_in_clients.sql", scope: "workspace", sql: appSignInClients },
   { name: "0067_app_scope_wanted.sql", scope: "workspace", sql: appScopeWanted },
   { name: "0068_own_app_sign_ins.sql", scope: "workspace", sql: ownAppSignIns },
+  { name: "0069_guests.sql", scope: "workspace", sql: guests },
 ];
 
 /**
@@ -195,6 +197,7 @@ export function migrate(storage: DurableObjectStorage, scope: Scope): void {
     ["0059_app_sign_in_clients.sql", "0066_app_sign_in_clients.sql"],
     ["0060_app_scope_wanted.sql", "0067_app_scope_wanted.sql"],
     ["0061_own_app_sign_ins.sql", "0068_own_app_sign_ins.sql"],
+    ["0064_guests.sql", "0069_guests.sql"],
   ] as const) {
     storage.sql.exec(
       "UPDATE d1_migrations SET name = ? WHERE name = ? AND NOT EXISTS (SELECT 1 FROM (SELECT name FROM d1_migrations WHERE name = ?) AS there)",

@@ -169,6 +169,7 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | **Slack's Web API for bots** | ✅ auth.test, chat.postMessage, chat.update, chat.delete, conversations.list and conversations.history | ✅ |
 | **Export everything** | ✅ an administrator exports every message, DMs included, as NDJSON | ✅ on Business+ (compliance exports) |
 | **Ways to join** | Join link and QR code, email invitations, email domains, open sign-up with Turnstile, Memberful | Invitations, invite links and approved email domains |
+| **Guests** | ✅ a guest for one room, whose stay ends when you choose | ✅ guest accounts (paid plans) |
 | **Single sign-on** | Memberful, for membership communities | Google on every plan, and SAML SSO with SCIM on Business+ |
 
 ### Where Slack does more
