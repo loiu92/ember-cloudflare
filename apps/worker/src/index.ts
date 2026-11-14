@@ -43,6 +43,7 @@ import {
   parseInvolvementChange,
   parseMemberfulDisconnection,
   parseGuestChange,
+  parseNewApiToken,
   parseNewGuest,
   parseSharedOrder,
   parseNewDirect,
@@ -71,6 +72,8 @@ import {
   TURNSTILE_CHECK_PATH,
   workspacePageOf,
   type Account,
+  type ApiTokenCreated,
+  type ApiTokens,
   type Bootstrap,
   type ChangedPerson,
   type CustomDomainCheck,
@@ -115,6 +118,7 @@ import {
   isCrossSite,
   isHttps,
   isSameOriginUpgrade,
+  newApiToken,
   newSessionToken,
   sessionCookie,
   sessionToken,
@@ -165,6 +169,7 @@ import { ADDRESS_HEADER, AUTHORIZED_AT_HEADER, BANNED_HEADER, HUDDLE_HEADER, ROO
 import { guestSignIn, type Env } from "./env";
 import { failed, notFound } from "./error-pages";
 import { exportListing, exportRoomMessages } from "./export";
+import { isMcpPath, MCP_PATH, mcpAction, mcpException } from "./mcp-server";
 import { jsonWithETag } from "./etag";
 import { fileAddressOf, serveFile } from "./files/serving";
 import { pictureFormOf } from "./files/pictures";
@@ -737,6 +742,35 @@ async function profile(request: Request, env: Env): Promise<Response> {
   const credentials = await credentialsOf(request, env);
   const yours = credentials && (await workspace(env).profile(credentials));
   return yours ? profileAnswer(yours, env) : problem(401, "Not signed in");
+}
+
+/**
+ * Makes one of the signed-in person's API tokens, as the API tokens section of their profile does,
+ * answering it with its secret, which is shown once, now, and never again.
+ */
+async function createApiToken(request: Request, env: Env): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  if (!credentials) return problem(401, "Not signed in");
+  const token = parseNewApiToken(await jsonBodyOf(request));
+  if (typeof token === "string") return problem(422, token);
+  const secret = newApiToken();
+  const created = await workspace(env).createApiToken(credentials, token.name, await tokenDigest(secret, env.SESSION_SECRET));
+  return created ? json({ ...created, token: secret } satisfies ApiTokenCreated, { status: 201 }) : problem(401, "Not signed in");
+}
+
+/** The API tokens of the signed-in person, newest first, as the API tokens section lists them. */
+async function listApiTokens(request: Request, env: Env): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  const tokens = credentials && (await workspace(env).apiTokensOf(credentials));
+  return tokens ? json({ tokens } satisfies ApiTokens) : problem(401, "Not signed in");
+}
+
+/** Revokes one of the signed-in person's API tokens, as its Revoke does, answering 204. One that was never theirs is 404. */
+async function revokeApiToken(request: Request, env: Env, id: string): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  const revoked = credentials && (await workspace(env).revokeApiToken(credentials, id));
+  if (!revoked) return problem(401, "Not signed in");
+  return revoked === "not found" ? problem(404, "Not found") : new Response(null, { status: 204 });
 }
 
 /**
@@ -1486,6 +1520,11 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (pathname === "/api/users/me/profile" && request.method === "PATCH") return () => changeProfile(request, env);
   if (pathname === "/api/users/me/dnd" && request.method === "PUT") return () => changeDnd(request, env);
   if (pathname === "/api/users/me/dnd" && request.method === "DELETE") return () => clearDnd(request, env);
+  if (pathname === "/api/account/tokens" && request.method === "POST") return () => createApiToken(request, env);
+  if (pathname === "/api/account/tokens" && request.method === "GET") return () => listApiTokens(request, env);
+  // Tokens' ids are sortable ids, which never need percent-encoding, so an encoded segment names none.
+  const apiToken = pathname.match(/^\/api\/account\/tokens\/([^/]+)$/);
+  if (apiToken && request.method === "DELETE") return () => revokeApiToken(request, env, apiToken[1]!);
   if (pathname === "/api/users/me/assistant" && request.method === "PATCH") return () => changeYourAssistant(request, env);
   const ownAppSignIn = pathname.match(/^\/api\/users\/me\/apps\/([^/]+)\/sign-in$/);
   if (ownAppSignIn && request.method === "POST") return () => beginOwnAppSignIn(request, env, ownAppSignIn[1]!);
@@ -1612,14 +1651,15 @@ async function route(request: Request, env: Env, pathname: string): Promise<Resp
   if (file) return write ? notFound(request) : serveFile(request, env, file);
   const action = apiAction(request, env, pathname) ?? botAction(request, env, pathname) ?? slackWebAction(request, env, pathname);
   // First: once a route is found, so an unknown address still answers 404, a banned IP address can't
-  // change anything, sign in or join.
-  if (write && action && (await isFromBannedAddress(request, env))) return tooManyRequests();
+  // change anything, sign in or join, nor say anything through the MCP server.
+  if (write && (action || isMcpPath(pathname)) && (await isFromBannedAddress(request, env))) return tooManyRequests();
   // Then: a browser too old for the app has nothing to sign in to.
   if (isFromUnsupportedBrowser(request)) return unsupportedBrowserPage(request, env);
   // The Slack-compatible Web API's methods are refused as its envelope says, for a token only its bot
   // has: what another site's page can't send, so its requests aren't refused as its own would be.
   if (write && pathname.startsWith("/api/") && !isSlackWebApiPath(pathname) && isCrossSite(request)) return problem(422, "Requests from other sites are refused");
   if (action) return action();
+  if (isMcpPath(pathname)) return mcpAction(request, env);
   if (pathname.startsWith("/api/")) return problem(404, "Not found");
   if (pathname === MEMBERFUL_SIGN_IN_PATH) return startMemberfulSignIn(request, env);
   // Signing in, which a banned IP address can't do, though it's a GET.
@@ -1661,6 +1701,7 @@ function failure(request: Request, pathname: string, error: unknown): Response {
   if (isSlackWebApiPath(pathname)) return slackWebFailure();
   if (pathname.startsWith("/api/")) return problem(500, "Something went wrong");
   if (isBotPath(pathname)) return exception(500);
+  if (isMcpPath(pathname)) return mcpException();
   return failed(request);
 }
 

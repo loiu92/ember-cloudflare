@@ -35,6 +35,7 @@ import { pushEndpoint } from "@/lib/push";
 import type { RoomAnswer } from "@/lib/room-list";
 import { cn } from "@/lib/utils";
 import { AnswerLevels } from "./answer-levels";
+import { ApiTokens } from "./api-tokens";
 import { ConversationNotifications } from "./conversation-notifications";
 import { DoNotDisturb } from "./do-not-disturb";
 import { MemberfulConnection } from "./memberful-connection";
@@ -525,6 +526,7 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
             onFailed={onFailed}
           />
         )}
+        <ApiTokens onFailed={onFailed} />
         {assistant && <AnswerLevels assistant={assistant} onChanged={setAssistant} onFailed={onFailed} />}
         <DoNotDisturb dndUntil={dndUntil} askForDnd={askForDnd} onChanged={onDndChanged} onFailed={onFailed} />
         {apps.length > 0 && <YourApps apps={apps} onChanged={setApps} onFailed={onFailed} />}

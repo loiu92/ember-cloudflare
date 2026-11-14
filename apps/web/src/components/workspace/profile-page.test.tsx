@@ -9,6 +9,7 @@ import {
   MEMBERFUL_CONNECTIONS_PATH,
   MEMBERFUL_DISCONNECTED_NOTICE,
   type Account,
+  type ApiTokens,
   type DirectoryUser,
   type MemberfulDisconnection,
   type MemberfulStatus,
@@ -90,6 +91,8 @@ function serve({
     switch (request) {
       case "GET /api/users/me/profile":
         return loaded();
+      case "GET /api/account/tokens":
+        return Response.json({ tokens: [] } satisfies ApiTokens);
       case "PATCH /api/users/me/profile": {
         const { password: _, currentPassword: _current, pushSubscriptionEndpoint: _endpoint, fieldValues, ...changes } = JSON.parse(String(init?.body)) as ProfileChanges;
         // What the server answers for the fields, with what the change saved for the ones it named.
