@@ -83,8 +83,15 @@ export interface MessageActionsHandle {
    * Clicking `from` again leaves the bar open, and Escape hands focus back to it.
    */
   openReactions: (from: HTMLElement) => void;
+  /** Opens More actions on the bar, focusing its first item, as the message drawer's More actions does. */
+  openActions: () => void;
   /** Focuses Message options, as sending a reaction does. */
   focus: () => void;
+}
+
+/** Closes whichever message's bar is open, as the drawer that holding a message opens makes room. */
+export function closeOpenBar() {
+  openBar?.close();
 }
 
 /**
@@ -224,6 +231,16 @@ export function MessageActionsMenu({ message, nodes, row, threaded, editable, th
       if (open && trayOpen) focusFirstReaction();
     },
     focus: () => trigger.current?.focus({ preventScroll: true }),
+    openActions: () => {
+      clearTimeout(leaveTimer.current);
+      hoverOpened.current = false;
+      boostTrigger.current = null;
+      focusingActions.current = true;
+      setRendered(true);
+      setOpen(true);
+      setTrayOpen(false);
+      setActionsOpen(true);
+    },
   }));
 
   const toggle = () => {
@@ -379,7 +396,7 @@ export function MessageActionsMenu({ message, nodes, row, threaded, editable, th
   );
 
   return (
-    <div ref={container} className="contents">
+    <div ref={container} data-message-actions className="contents">
       {/* Every message has Message options, so only a mouse, which can show its tooltip, gets one. As the bar's
           last button, the tooltip says what it opens. */}
       {overlapping ? <ActionTooltip label={pinned ? "More actions" : "Message options"}>{options}</ActionTooltip> : options}
@@ -589,7 +606,7 @@ interface QuoteButtonProps extends ComponentProps<"button"> {
  * while the bar's in the page, so a change to the directory doesn't render every message's actions again.
  * As a tooltip's trigger, it's handed the tooltip's `onClick`, which a click calls first.
  */
-function QuoteButton({ message, nodes, onQuote, onClick, ...props }: QuoteButtonProps) {
+export function QuoteButton({ message, nodes, onQuote, onClick, ...props }: QuoteButtonProps) {
   const people = useContext(PeopleContext);
   const nameOf = useNameOf();
   const quote = (event: MouseEvent<HTMLButtonElement>) => {
@@ -602,7 +619,7 @@ function QuoteButton({ message, nodes, onQuote, onClick, ...props }: QuoteButton
 }
 
 /** Copies the message's address, as Copy link does. Pages carry only the path, made absolute against the page. */
-function copyLink(event: MouseEvent<HTMLButtonElement>, message: Message) {
+export function copyLink(event: MouseEvent<HTMLButtonElement>, message: Message) {
   return copyWithSuccess(event.currentTarget, new URL(permalinkOf(message), document.baseURI).href);
 }
 
