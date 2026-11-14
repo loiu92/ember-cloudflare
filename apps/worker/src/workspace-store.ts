@@ -4520,6 +4520,8 @@ export class WorkspaceStore {
       statement(`DELETE FROM user_group_members WHERE group_id = ?`, id),
       statement(`DELETE FROM user_groups WHERE id = ?`, id),
     ]);
+  }
+
   /**
    * Everyone and every room, but no messages, which each room's own object reads: an export's one
    * answer from the Workspace. Everyone is in the order they joined, and rooms are the shared ones by
