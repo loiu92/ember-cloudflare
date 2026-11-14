@@ -42,12 +42,9 @@ import {
   parseFavoriteOrder,
   parseInvolvementChange,
   parseMemberfulDisconnection,
-<<<<<<< HEAD
   parseGuestChange,
-  parseNewGuest,
-=======
   parseNewApiToken,
->>>>>>> 033017ae (Give a person API tokens, whose secret shows once, that open Ember as them)
+  parseNewGuest,
   parseSharedOrder,
   parseNewDirect,
   parseNewRoom,
@@ -172,6 +169,7 @@ import { botAction, exception, isBotPath, withoutBotKeys } from "./bots/api";
 import { ADDRESS_HEADER, AUTHORIZED_AT_HEADER, BANNED_HEADER, HUDDLE_HEADER, ROOM_HEADER, SESSION_HEADER, USER_HEADER } from "./chat-room";
 import { guestSignIn, type Env } from "./env";
 import { failed, notFound } from "./error-pages";
+import { isMcpPath, MCP_PATH, mcpAction, mcpException } from "./mcp-server";
 import { jsonWithETag } from "./etag";
 import { fileAddressOf, serveFile } from "./files/serving";
 import { pictureFormOf } from "./files/pictures";
@@ -1535,16 +1533,13 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (reminder && request.method === "DELETE") return () => dismissReminder(request, env, reminder[1]!);
   if (pathname === "/api/users/me/profile" && request.method === "GET") return () => profile(request, env);
   if (pathname === "/api/users/me/profile" && request.method === "PATCH") return () => changeProfile(request, env);
-<<<<<<< HEAD
   if (pathname === "/api/users/me/dnd" && request.method === "PUT") return () => changeDnd(request, env);
   if (pathname === "/api/users/me/dnd" && request.method === "DELETE") return () => clearDnd(request, env);
-=======
   if (pathname === "/api/account/tokens" && request.method === "POST") return () => createApiToken(request, env);
   if (pathname === "/api/account/tokens" && request.method === "GET") return () => listApiTokens(request, env);
   // Tokens' ids are sortable ids, which never need percent-encoding, so an encoded segment names none.
   const apiToken = pathname.match(/^\/api\/account\/tokens\/([^/]+)$/);
   if (apiToken && request.method === "DELETE") return () => revokeApiToken(request, env, apiToken[1]!);
->>>>>>> 033017ae (Give a person API tokens, whose secret shows once, that open Ember as them)
   if (pathname === "/api/users/me/assistant" && request.method === "PATCH") return () => changeYourAssistant(request, env);
   const ownAppSignIn = pathname.match(/^\/api\/users\/me\/apps\/([^/]+)\/sign-in$/);
   if (ownAppSignIn && request.method === "POST") return () => beginOwnAppSignIn(request, env, ownAppSignIn[1]!);
@@ -1673,12 +1668,13 @@ async function route(request: Request, env: Env, pathname: string): Promise<Resp
   if (file) return write ? notFound(request) : serveFile(request, env, file);
   const action = apiAction(request, env, pathname) ?? botAction(request, env, pathname);
   // First: once a route is found, so an unknown address still answers 404, a banned IP address can't
-  // change anything, sign in or join.
-  if (write && action && (await isFromBannedAddress(request, env))) return tooManyRequests();
+  // change anything, sign in or join, nor say anything through the MCP server.
+  if (write && (action || isMcpPath(pathname)) && (await isFromBannedAddress(request, env))) return tooManyRequests();
   // Then: a browser too old for the app has nothing to sign in to.
   if (isFromUnsupportedBrowser(request)) return unsupportedBrowserPage(request, env);
   if (write && pathname.startsWith("/api/") && isCrossSite(request)) return problem(422, "Requests from other sites are refused");
   if (action) return action();
+  if (isMcpPath(pathname)) return mcpAction(request, env);
   if (pathname.startsWith("/api/")) return problem(404, "Not found");
   if (pathname === MEMBERFUL_SIGN_IN_PATH) return startMemberfulSignIn(request, env);
   // Signing in, which a banned IP address can't do, though it's a GET.
@@ -1720,6 +1716,7 @@ function failure(request: Request, pathname: string, error: unknown): Response {
   console.error(`${request.method} ${withoutBotKeys(pathname)} failed:`, holdsSecrets ? "500 Internal Server Error" : error);
   if (pathname.startsWith("/api/")) return problem(500, "Something went wrong");
   if (isBotPath(pathname)) return exception(500);
+  if (isMcpPath(pathname)) return mcpException();
   return failed(request);
 }
 
