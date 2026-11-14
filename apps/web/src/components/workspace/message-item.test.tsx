@@ -966,7 +966,7 @@ describe("More actions on a message", () => {
       withMouse();
       const { actions, article, user } = show(message({ creator: grace }), { administrator: true, pinnedIds: new Set<string>() });
       await openMoreActions(user, article);
-      expect(items()).toEqual(["Pin to room", "Quote", "Copy text", "Copy link", "Edit message", "Delete message"]);
+      expect(items()).toEqual(["Pin to room", "Quote", "Copy text", "Copy link", "Remind me…", "Edit message", "Delete message"]);
       await user.click(within(moreActions()).getByRole("button", { name: "Pin to room" }));
       expect(actions.pin).toHaveBeenCalledWith("m1");
       cleanup();

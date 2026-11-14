@@ -169,11 +169,12 @@ describe("Custom CSS", () => {
 });
 
 describe("Custom domain", () => {
-  it("links administrators to Domain settings, after User groups then Profile fields, and members not at all", () => {    const { rerender } = render(<SettingsNavigation section="domain-settings" administrator />);
+  it("links administrators to Domain settings, after User groups then Profile fields, and members not at all", () => {
+    const { rerender } = render(<SettingsNavigation section="domain-settings" administrator />);
     const domain = screen.getByRole("link", { name: "Domain settings" });
     expect(domain).toHaveAttribute("href", "/account/edit#domain-settings");
     expect(domain.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(links()[4]).toBe(domain);
+    expect(links()[5]).toBe(domain);
     expect(current()).toBe(domain);
     rerender(<SettingsNavigation section="community-settings" administrator={false} />);
     expect(screen.queryByRole("link", { name: "Domain settings" })).not.toBeInTheDocument();
