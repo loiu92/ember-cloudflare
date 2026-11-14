@@ -46,6 +46,7 @@ import { PageHeading, Panel, SettingsPage } from "./settings-page";
 import { SignInLink } from "./sign-in-link";
 import { avatarUrlOf, avatarVersionOf } from "./user-avatar";
 import { MoodEditor } from "./mood-editor";
+import { YourApps } from "./your-apps";
 
 interface Props {
   me: Me;
@@ -192,6 +193,8 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
    * differ are changes made since the save, as another tab's newer save, and show.
    */
   const savedMood = useRef<PersonMood | null | undefined>(undefined);
+  /** The connected apps you can sign in to yourself, each with your sign-in to it, if you've made one. */
+  const [apps, setApps] = useState<Profile["apps"]>([]);
   const [saving, setSaving] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
   const currentPasswordInput = useRef<HTMLInputElement>(null);
@@ -225,6 +228,8 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
         // The hush too, which the section saves, and the rail shows by its crescent, unless one was
         // heard while the page was loading, which may have read before it did.
         heard(answer.profile.dndUntil ?? null);
+        // The same goes for the Apps section, which signing out there changes.
+        setApps(answer.profile.apps);
       },
       (error: unknown) => {
         // A page left before its profile loads only reports a session that's ended, which goes to sign in.
@@ -522,6 +527,7 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
         )}
         {assistant && <AnswerLevels assistant={assistant} onChanged={setAssistant} onFailed={onFailed} />}
         <DoNotDisturb dndUntil={dndUntil} askForDnd={askForDnd} onChanged={onDndChanged} onFailed={onFailed} />
+        {apps.length > 0 && <YourApps apps={apps} onChanged={setApps} onFailed={onFailed} />}
         {rooms && <ConversationNotifications me={me} rooms={rooms} askForRoom={askForRoom} onFailed={onFailed} />}
         {transferId && <SignInLink transferId={transferId} mine />}
       </Panel>

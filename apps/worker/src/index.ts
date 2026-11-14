@@ -118,7 +118,24 @@ import {
   tokenDigest,
 } from "./auth";
 import { directoryOf } from "./avatar-tokens";
-import { appPage, changeApp, connectApp, disconnectApp, listApps, pickAgentTools, readAppTools, showAgentTools, showApp } from "./apps/api";
+import {
+  appPage,
+  beginAppSignIn,
+  beginNewAppSignIn,
+  beginOwnAppSignIn,
+  changeApp,
+  clientDocument,
+  connectApp,
+  disconnectApp,
+  finishAppSignIn,
+  listApps,
+  pickAgentTools,
+  readAppTools,
+  showAgentTools,
+  showApp,
+  signOutOfApp,
+} from "./apps/api";
+import { CLIENT_DOCUMENT_PATH } from "./apps/oauth";
 import { agentPage, changeAgent, createAgent, deleteAgent, listAgents, removeAgentAvatar, showAgent, tryAgent } from "./assistant/agents";
 import {
   addAssistantModel,
@@ -1336,6 +1353,10 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (app && request.method === "GET") return () => showApp(request, env, app[1]!);
   if (app && request.method === "PATCH") return () => changeApp(request, env, app[1]!);
   if (app && request.method === "DELETE") return () => disconnectApp(request, env, app[1]!);
+  if (pathname === "/api/account/app-sign-ins" && request.method === "POST") return () => beginNewAppSignIn(request, env);
+  if (pathname === "/api/account/app-sign-ins/finish" && request.method === "POST") return () => finishAppSignIn(request, env);
+  const appSignIn = pathname.match(/^\/api\/account\/apps\/([^/]+)\/sign-in$/);
+  if (appSignIn && request.method === "POST") return () => beginAppSignIn(request, env, appSignIn[1]!);
   const appTools = pathname.match(/^\/api\/account\/apps\/([^/]+)\/tools$/);
   if (appTools && request.method === "POST") return () => readAppTools(request, env, appTools[1]!);
   if (pathname === "/api/account/huddles" && request.method === "PUT") return () => saveHuddles(request, env);
@@ -1390,6 +1411,9 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (pathname === "/api/users/me/dnd" && request.method === "PUT") return () => changeDnd(request, env);
   if (pathname === "/api/users/me/dnd" && request.method === "DELETE") return () => clearDnd(request, env);
   if (pathname === "/api/users/me/assistant" && request.method === "PATCH") return () => changeYourAssistant(request, env);
+  const ownAppSignIn = pathname.match(/^\/api\/users\/me\/apps\/([^/]+)\/sign-in$/);
+  if (ownAppSignIn && request.method === "POST") return () => beginOwnAppSignIn(request, env, ownAppSignIn[1]!);
+  if (ownAppSignIn && request.method === "DELETE") return () => signOutOfApp(request, env, ownAppSignIn[1]!);
   if (pathname === MEMBERFUL_CONNECTIONS_PATH && request.method === "POST") return () => connectMemberful(request, env);
   if (pathname === MEMBERFUL_CONNECTIONS_PATH && request.method === "DELETE") return () => disconnectMemberful(request, env);
   if (pathname === AVATAR_PATH && request.method === "PUT") return () => changeAvatar(request, env);
@@ -1491,6 +1515,8 @@ async function route(request: Request, env: Env, pathname: string): Promise<Resp
   // Nor is Memberful's webhook, which its servers sign with the webhook's secret.
   if (pathname === MEMBERFUL_WEBHOOK_PATH) return memberfulWebhook(request, env);
   const write = request.method !== "GET" && request.method !== "HEAD";
+  // Nor is an app's authorization server, reading who Ember is.
+  if (pathname === CLIENT_DOCUMENT_PATH && !write) return clientDocument(request);
   // Nor are a room's files, to whoever has the address, whatever their browser.
   const file = fileAddressOf(pathname);
   if (file) return write ? notFound(request) : serveFile(request, env, file);

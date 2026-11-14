@@ -35,6 +35,7 @@ const DISCONNECTED: ProfileAnswer = {
     memberful: { membersOnly: true, connected: null },
     assistant: null,
     dndUntil: null,
+    apps: [],
   },
   transferId: "u2.mgk3x2b0.saved",
 };

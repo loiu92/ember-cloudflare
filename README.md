@@ -149,6 +149,7 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 |---|---|---|
 | **Rooms, private rooms and DMs** | ✅ | ✅ |
 | **Threads** | ✅ with Also send to the room | ✅ with Also send to the channel |
+| **A DM with yourself** | ✅ a note-to-self space, one per person | ✅ |
 | **Mentions, quotes, reactions and edits** | ✅ react with any emoji, mention a person or a group | ✅ plus custom emoji |
 | **Custom status** | ✅ an emoji and a few words beside your name, until you clear them or they clear themselves | ✅ |
 | **User groups** | ✅ name a group, mention it, and everyone in it is notified | ✅ |

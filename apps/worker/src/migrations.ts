@@ -61,6 +61,11 @@ import profileFields from "../migrations/0060_profile_fields.sql";
 import reminders from "../migrations/0061_reminders.sql";
 import statuses from "../migrations/0062_statuses.sql";
 import saves from "../migrations/0063_saves.sql";
+import waitingCalls from "../migrations/0064_waiting_calls.sql";
+import appSignIns from "../migrations/0065_app_sign_ins.sql";
+import appSignInClients from "../migrations/0066_app_sign_in_clients.sql";
+import appScopeWanted from "../migrations/0067_app_scope_wanted.sql";
+import ownAppSignIns from "../migrations/0068_own_app_sign_ins.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -148,6 +153,11 @@ export const MIGRATIONS: Migration[] = [
   { name: "0061_reminders.sql", scope: "workspace", sql: reminders },
   { name: "0062_statuses.sql", scope: "workspace", sql: statuses },
   { name: "0063_saves.sql", scope: "workspace", sql: saves },
+  { name: "0064_waiting_calls.sql", scope: "room", sql: waitingCalls },
+  { name: "0065_app_sign_ins.sql", scope: "workspace", sql: appSignIns },
+  { name: "0066_app_sign_in_clients.sql", scope: "workspace", sql: appSignInClients },
+  { name: "0067_app_scope_wanted.sql", scope: "workspace", sql: appScopeWanted },
+  { name: "0068_own_app_sign_ins.sql", scope: "workspace", sql: ownAppSignIns },
 ];
 
 /**
@@ -174,11 +184,17 @@ export function migrate(storage: DurableObjectStorage, scope: Scope): void {
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`);
   // This copy's early deploys numbered reminders 0055 and statuses 0056, which upstream's apps and
-  // agent tools then took. A storage that ran them under the old names replays 0061/0062 onto tables
-  // it already has and stops; the record follows the table, not the number it once wore.
+  // agent tools then took, and the self-DM branch's migrations 0057-0061, which pins and the rest of
+  // the workspace's then took. A storage that ran them under the old names replays the new ones onto
+  // tables it already has and stops; the record follows the table, not the number it once wore.
   for (const [was, now] of [
     ["0055_reminders.sql", "0061_reminders.sql"],
     ["0056_statuses.sql", "0062_statuses.sql"],
+    ["0057_waiting_calls.sql", "0064_waiting_calls.sql"],
+    ["0058_app_sign_ins.sql", "0065_app_sign_ins.sql"],
+    ["0059_app_sign_in_clients.sql", "0066_app_sign_in_clients.sql"],
+    ["0060_app_scope_wanted.sql", "0067_app_scope_wanted.sql"],
+    ["0061_own_app_sign_ins.sql", "0068_own_app_sign_ins.sql"],
   ] as const) {
     storage.sql.exec(
       "UPDATE d1_migrations SET name = ? WHERE name = ? AND NOT EXISTS (SELECT 1 FROM (SELECT name FROM d1_migrations WHERE name = ?) AS there)",

@@ -105,7 +105,27 @@ import {
   type YourAssistantChanges,
 } from "@ember/protocol";
 import type { Agent, AgentAnswer, AgentChanges, Agents, AgentSettings, AgentTrial, AgentTrialAnswer, NewAgent } from "@ember/protocol/agents";
-import type { AgentToolPicks, AgentTools, App, AppAnswer, AppChanges, AppId, Apps, AppSummary, NewApp, OfferedApp, ToolPick } from "@ember/protocol/apps";
+import type {
+  AgentToolPicks,
+  AgentTools,
+  App,
+  AppAnswer,
+  AppChanges,
+  AppClient,
+  AppId,
+  AppRemoved,
+  Apps,
+  AppSignedIn,
+  AppSignInBegun,
+  AppSignInReturn,
+  AppSummary,
+  NewApp,
+  NewAppSignIn,
+  OfferedApp,
+  ToolPick,
+  YourAppSignedIn,
+  YourAppSignedOut,
+} from "@ember/protocol/apps";
 import type { LogoVariants } from "@/lib/previews";
 
 // The session lives in an HttpOnly cookie, which the browser sends with every request and socket,
@@ -121,6 +141,10 @@ export class ApiError extends Error {
     readonly field?: string,
     /** The page to go to instead, when the server names one. */
     readonly redirect?: string,
+    /** Whether an app's server refused for want of a sign-in, which Ember can begin. */
+    readonly signIn?: boolean,
+    /** Whether an app's sign-in wants a client ID that Ember can't get itself, which the app's form then asks for. */
+    readonly client?: boolean,
   ) {
     super(message);
   }
@@ -131,8 +155,10 @@ export const isSignedOut = (error: unknown) => error instanceof ApiError && erro
 
 /** What an answer carries, or the ApiError it says why it failed with. */
 async function dataOf<T>(response: Response): Promise<T> {
-  const data = (await response.json().catch(() => ({}))) as T & { error?: string; field?: string; redirect?: string };
-  if (!response.ok) throw new ApiError(response.status, data.error ?? `Request failed (${response.status})`, data.field, data.redirect);
+  const data = (await response.json().catch(() => ({}))) as T & { error?: string; field?: string; redirect?: string; signIn?: unknown; client?: unknown };
+  if (!response.ok) {
+    throw new ApiError(response.status, data.error ?? `Request failed (${response.status})`, data.field, data.redirect, data.signIn === true || undefined, data.client === true || undefined);
+  }
   return data;
 }
 
@@ -742,6 +768,45 @@ export async function connectApp(app: NewApp): Promise<App> {
   return (await request<AppAnswer>("/api/account/apps", { method: "POST", body: JSON.stringify(app) })).app;
 }
 
+/**
+ * Begins a sign-in to the server of `app`, one to connect, answering where its authorization server
+ * signs people in, to send the browser. Fails as `connectApp` does, the 422 saying why Ember can't use
+ * the sign-in its server describes, if it describes one.
+ */
+export async function beginNewAppSignIn(app: NewAppSignIn): Promise<string> {
+  return (await request<AppSignInBegun>("/api/account/app-sign-ins", { method: "POST", body: JSON.stringify(app) })).authorizationUrl;
+}
+
+/**
+ * Begins a sign-in to the server of the connected app `appId`, again or in place of its token, as
+ * `beginNewAppSignIn` does, as `client` when the app's page asks who Ember is there, and otherwise as
+ * the app last signed in. Fails as it and `fetchApp` do.
+ */
+export async function beginAppSignIn(appId: AppId, client?: AppClient): Promise<string> {
+  const body = client && { body: JSON.stringify(client) };
+  return (await request<AppSignInBegun>(`/api/account/apps/${encodeURIComponent(appId)}/sign-in`, { method: "POST", ...body })).authorizationUrl;
+}
+
+/**
+ * Finishes the sign-in an authorization server sent the browser `back` from, answering the app, connected
+ * by it or signed in to `again`, or, for a sign-in you made to a connected app yourself, the app as your
+ * profile then lists it. Fails as `fetchApps` does, and with a 422 ApiError for a sign-in that has
+ * ended, was begun by someone else, or that its server didn't finish.
+ */
+export async function finishAppSignIn(back: AppSignInReturn): Promise<AppSignedIn | YourAppSignedIn> {
+  return request<AppSignedIn | YourAppSignedIn>("/api/account/app-sign-ins/finish", { method: "POST", body: JSON.stringify(back) });
+}
+
+/** Begins a sign-in you make to the connected app `appId` yourself, answering where to send the browser. Fails with an ApiError: 404 for an app that isn't one Ember signs in to, 409 while Ember AI is off, 422 when its server has no sign-in Ember can use. */
+export async function beginOwnAppSignIn(appId: AppId): Promise<string> {
+  return (await request<AppSignInBegun>(`/api/users/me/apps/${encodeURIComponent(appId)}/sign-in`, { method: "POST" })).authorizationUrl;
+}
+
+/** Forgets the sign-in you made to the connected app `appId` yourself, answering the apps as your profile then lists them, and whether its service took the sign-in back. Fails as `beginOwnAppSignIn` does. */
+export async function signOutOfApp(appId: AppId): Promise<YourAppSignedOut> {
+  return request<YourAppSignedOut>(`/api/users/me/apps/${encodeURIComponent(appId)}/sign-in`, { method: "DELETE" });
+}
+
 /** Changes app `appId`, leaving what `changes` leaves out, answering it as its page then shows it. Fails as `fetchApp` and `connectApp` do. */
 export async function changeApp(appId: AppId, changes: AppChanges): Promise<App> {
   return (await request<AppAnswer>(`/api/account/apps/${encodeURIComponent(appId)}`, { method: "PATCH", body: JSON.stringify(changes) })).app;
@@ -770,9 +835,9 @@ export async function pickAgentTools(agentId: UserId, tools: ToolPick[]): Promis
   return (await request<AgentTools>(`/api/account/agents/${encodeURIComponent(agentId)}/tools`, { method: "PUT", body: JSON.stringify(picks) })).apps;
 }
 
-/** Disconnects app `appId`. Fails as `fetchApp` does. */
-export async function disconnectApp(appId: AppId): Promise<void> {
-  await request(`/api/account/apps/${encodeURIComponent(appId)}`, { method: "DELETE" });
+/** Disconnects app `appId`, answering whether its service took back Ember's sign-in to it, if Ember was signed in to it. Fails as `fetchApp` does. */
+export function disconnectApp(appId: AppId): Promise<Partial<AppRemoved>> {
+  return request<Partial<AppRemoved>>(`/api/account/apps/${encodeURIComponent(appId)}`, { method: "DELETE" });
 }
 
 /**

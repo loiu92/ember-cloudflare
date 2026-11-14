@@ -3,6 +3,7 @@
 // worker and the web app both import it directly as TypeScript.
 
 import type { AgentProfile } from "./agents.ts";
+import type { YourApp } from "./apps.ts";
 import type { AssistantSettings, YourAssistant } from "./assistant.ts";
 import { isActionId, isActionValue, type Card } from "./cards.ts";
 import type { StoredFile } from "./files.ts";
@@ -103,6 +104,7 @@ export {
   type Upload,
 } from "./files.ts";
 export {
+  APP_SIGNED_IN_PATH,
   BOTS_PATH,
   CUSTOM_STYLES_PATH,
   EMAIL_SIGN_UP_PATH,
@@ -1017,6 +1019,9 @@ export interface Profile {
 
   /** The workspace's profile fields, in the order its administrators put them in, with what you saved for each, "" for none. */
   fields: ProfileFieldEntry[];
+
+  /** The connected apps you can sign in to yourself, by name, each with your sign-in to it, if you've made one: none while Ember AI is off, or for a guest. */
+  apps: YourApp[];
 }
 
 /** What `GET /api/users/me/profile` answers, and `PATCH` once it has saved. */
