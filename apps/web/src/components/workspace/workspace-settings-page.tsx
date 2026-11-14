@@ -567,7 +567,7 @@ export function WorkspaceSettingsPage({
           ) : (
             <p className="text-muted-foreground">Community admins manage user groups.</p>
           ))}
-
+      </Panel>
       <Panel id="profile-fields-settings" hidden={section !== "profile-fields-settings"} aria-labelledby="profile-fields-heading" className="flex flex-col gap-6">
         <PageHeading id="profile-fields-heading" title="Profile fields" className={SECTION_HEADING}>
           Ask everyone the same things on their profile, such as their title or pronouns.

@@ -129,7 +129,7 @@ describe("Edit your profile", () => {
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     const profile = { name: "Ada Lovelace", emailAddress: "ada@example.com", bio: null, mood: null, ...(await initialsOf(administrator)), password: true, membershipNeeded: false, memberful: null, assistant: null, dndUntil: null, fields: [] };
     expect(await response.json()).toEqual({ profile, transferId: expect.any(String) } satisfies ProfileAnswer);
-    expect(await profileOf(grace)).toEqual({ name: "Grace Hopper", emailAddress: null, bio: "Rear admiral", ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, assistant: null, dndUntil: null, fields: [] } satisfies Profile);
+    expect(await profileOf(grace)).toEqual({ name: "Grace Hopper", emailAddress: null, bio: "Rear admiral", mood: null, ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, assistant: null, dndUntil: null, fields: [] } satisfies Profile);
   });
 
   it("saves your name, email address and bio, answering your profile as it is then", async () => {
