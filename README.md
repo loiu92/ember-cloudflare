@@ -151,7 +151,6 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | **Threads** | ✅ with Also send to the room | ✅ with Also send to the channel |
 | **Mentions, quotes, reactions and edits** | ✅ react with any emoji, mention a person or a group | ✅ plus custom emoji |
 | **User groups** | ✅ name a group, mention it, and everyone in it is notified | ✅ |
-| **Mentions, quotes, reactions and edits** | ✅ react with any emoji or a few words | ✅ plus custom emoji |
 | **Reminders** | ✅ ask a message to come back when you pick | ✅ |
 | **Custom profile fields** | ✅ administrators define up to 10 for everyone, people answer them on their profile | ✅ on paid plans |
 | **Rich text, code blocks and link previews** | ✅ | ✅ |
