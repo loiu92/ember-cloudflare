@@ -31,6 +31,7 @@ import { pushEndpoint } from "@/lib/push";
 import type { RoomAnswer } from "@/lib/room-list";
 import { cn } from "@/lib/utils";
 import { AnswerLevels } from "./answer-levels";
+import { ApiTokens } from "./api-tokens";
 import { ConversationNotifications } from "./conversation-notifications";
 import { MemberfulConnection } from "./memberful-connection";
 import { InstallInstructions } from "./notification-help";
@@ -379,6 +380,7 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
             onFailed={onFailed}
           />
         )}
+        <ApiTokens onFailed={onFailed} />
         {assistant && <AnswerLevels assistant={assistant} onChanged={setAssistant} onFailed={onFailed} />}
         {rooms && <ConversationNotifications me={me} rooms={rooms} askForRoom={askForRoom} onFailed={onFailed} />}
         {transferId && <SignInLink transferId={transferId} mine />}
