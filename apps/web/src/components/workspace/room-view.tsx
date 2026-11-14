@@ -62,7 +62,7 @@ export interface RoomViewHandle {
 }
 
 export function RoomView({ room, messageId, threadId, replyId, invitation, onDismissInvitation, me, favorite, gone, onStarred, involvement, newSince = null, askForRoom, onSessionChanged, onFailed, onGone, ref }: Props) {
-  const { state, frames, postMessage, postFiles, typing, loadOlder, loadNewer, jump, messageActions, dismissNotice } = useRoom(room.id, me, onSessionChanged, messageId);
+  const { state, frames, postMessage, postFiles, runCommand, typing, loadOlder, loadNewer, jump, messageActions, dismissNotice } = useRoom(room.id, me, onSessionChanged, messageId);
   const { pins, pinnedIds, listed, refresh } = usePins(room.id, frames);
   const nameOf = useNameOf();
   const name = roomName(room, me.id, nameOf);
@@ -174,6 +174,7 @@ export function RoomView({ room, messageId, threadId, replyId, invitation, onDis
               autoFocus={threadId === undefined}
               onSend={postMessage}
               onSendFiles={postFiles}
+              onRunCommand={runCommand}
               onTyping={typing}
               onEditLastMessage={editLastMessage}
             />
