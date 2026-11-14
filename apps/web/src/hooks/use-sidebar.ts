@@ -93,14 +93,10 @@ export function useSidebar(
   directory: Directory = NO_DIRECTORY,
   onAccountChanged: (account: Account) => void = () => {},
   onGone: (roomId: RoomId) => void = () => {},
-<<<<<<< HEAD
   onReminderDue: (reminder: Reminder) => void = () => {},
   onReminderGone: (id: string) => void = () => {},
-  onDndChanged: (dndUntil: string | null) => void = () => {},
-  reloadReminders: () => void = () => {},
-=======
   onDndChanged: (dndUntil: string | null, read?: boolean) => void = () => {},
->>>>>>> feat/do-not-disturb
+  reloadReminders: () => void = () => {},
 ) {
   const [{ list }, change] = useReducer(roomListReducer, NO_ROOM_LIST);
   // Whether a list the server sent has come, rather than only the empty one a failed first load leaves.
@@ -188,14 +184,10 @@ export function useSidebar(
           workspace.connected();
           if (!toldOf.you) signsIn(frame.you);
           if (!toldOf.account) accountChanged(frame.account);
-<<<<<<< HEAD
-          dndChanged(frame.dndUntil ?? null);
-          reloadReminders();
-=======
           // The welcome speaks of what the hush was as the socket let it in, which may have read before
           // a change the page made or heard since.
           dndChanged(frame.dndUntil ?? null, true);
->>>>>>> feat/do-not-disturb
+          reloadReminders();
           return reload();
         case "room.saved":
           heardOf(frame.room.id);
