@@ -497,13 +497,8 @@ export interface AvatarChange {
   dueAt: number;
 }
 
-<<<<<<< HEAD
-/** What `WorkspaceStore.changeProfile` saves: someone's profile, and the digest of a new password, or null to keep theirs. */
-export interface ProfileChange extends Pick<Profile, "name" | "emailAddress" | "bio" | "mood"> {
-=======
 /** What `WorkspaceStore.changeProfile` saves: someone's profile, the digest of a new password or null to keep theirs, and what they gave the workspace's fields, or none. */
-export interface ProfileChange extends Pick<Profile, "name" | "emailAddress" | "bio"> {
->>>>>>> feat/profile-fields
+export interface ProfileChange extends Pick<Profile, "name" | "emailAddress" | "bio" | "mood"> {
   passwordDigest: string | null;
   fieldValues: Record<string, string> | null;
 }
@@ -4244,14 +4239,9 @@ export class WorkspaceStore {
    * password started connecting, or connected, if they had one and keep an email address to sign in
    * with (`UNLINK_ON_NEW_PASSWORD`). Answers whether it queued any.
    */
-<<<<<<< HEAD
-  async changeProfile(userId: UserId, { name, emailAddress, bio, mood, passwordDigest }: ProfileChange, now: string, ended: EndedByPassword | null): Promise<boolean> {
+  async changeProfile(userId: UserId, { name, emailAddress, bio, mood, passwordDigest, fieldValues }: ProfileChange, now: string, ended: EndedByPassword | null): Promise<boolean> {
     const change = statement(CHANGE_PROFILE, name, emailAddress, bio, mood && JSON.stringify(mood), passwordDigest, now, userId);
-=======
-  async changeProfile(userId: UserId, { name, emailAddress, bio, passwordDigest, fieldValues }: ProfileChange, now: string, ended: EndedByPassword | null): Promise<boolean> {
-    const change = statement(CHANGE_PROFILE, name, emailAddress, bio, passwordDigest, now, userId);
     const asked = changeProfileFieldValuesStatements(userId, fieldValues ?? {});
->>>>>>> feat/profile-fields
     if (!ended) {
       await this.db.batch([change, ...asked]);
       return false;
