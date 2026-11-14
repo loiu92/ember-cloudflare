@@ -831,7 +831,7 @@ describe("Do not disturb", () => {
 
   it("says when your push notifications are hushed until, as the welcome read them", async () => {
     const onDndChanged = vi.fn();
-    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, onDndChanged));
+    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, undefined, undefined, onDndChanged));
     await settle();
     socket().connect(ada, ember, HUSHED);
     expect(onDndChanged).toHaveBeenLastCalledWith(HUSHED, true);
@@ -842,7 +842,7 @@ describe("Do not disturb", () => {
 
   it("says when the socket brings what a tab of yours did to them", async () => {
     const onDndChanged = vi.fn();
-    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, onDndChanged));
+    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, undefined, undefined, onDndChanged));
     await settle();
     socket().connect();
     socket().receive({ type: "dnd.changed", dndUntil: HUSHED });
