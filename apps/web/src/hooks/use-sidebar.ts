@@ -81,8 +81,9 @@ const isSame = (you: Me, me: Me) => you.id === me.id && you.name === me.name && 
  * say. The people `directory` loads again each time the sidebar does by itself, and hears whoever the
  * socket says has changed. `onAccountChanged` hears the workspace as the socket says it is, each time
  * it connects and whenever an administrator changes it. `onGone` hears of each room the socket says is
- * gone as it leaves the list. `reloadReminders` runs each time the socket connects too, so a reminder
- * that came due while it was away is caught up.
+ * gone as it leaves the list. `onDndChanged` hears when your push notifications are hushed until (Do
+ * not disturb), as the welcome says they were when it let the socket in. `reloadReminders` runs each
+ * time the socket connects too, so a reminder that came due while it was away is caught up.
  */
 export function useSidebar(
   me: Me,
@@ -92,6 +93,7 @@ export function useSidebar(
   onGone: (roomId: RoomId) => void = () => {},
   onReminderDue: (reminder: Reminder) => void = () => {},
   onReminderGone: (id: string) => void = () => {},
+  onDndChanged: (dndUntil: string | null) => void = () => {},
   reloadReminders: () => void = () => {},
 ) {
   const [{ list }, change] = useReducer(roomListReducer, NO_ROOM_LIST);
@@ -120,6 +122,7 @@ export function useSidebar(
   // A failed load leaves the avatars as they are until the next.
   const reloadPeople = useEffectEvent(() => void directory.reload().catch(() => {}));
   const gone = useEffectEvent(onGone);
+  const dndChanged = useEffectEvent(onDndChanged);
   const isSomeoneElse = useEffectEvent((user: User) => user.id !== me.id);
   // Whether `user`, active now, is someone the directory lists as removed, banned or suspended, rather
   // than someone new, whom it doesn't list yet.
@@ -179,6 +182,7 @@ export function useSidebar(
           workspace.connected();
           if (!toldOf.you) signsIn(frame.you);
           if (!toldOf.account) accountChanged(frame.account);
+          dndChanged(frame.dndUntil ?? null);
           reloadReminders();
           return reload();
         case "room.saved":
