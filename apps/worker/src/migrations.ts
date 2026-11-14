@@ -57,6 +57,7 @@ import agentTools from "../migrations/0056_agent_tools.sql";
 import pins from "../migrations/0057_pins.sql";
 import userGroups from "../migrations/0058_user_groups.sql";
 import dnd from "../migrations/0059_dnd.sql";
+import profileFields from "../migrations/0060_profile_fields.sql";
 import reminders from "../migrations/0061_reminders.sql";
 import statuses from "../migrations/0062_statuses.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
@@ -142,6 +143,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0057_pins.sql", scope: "room", sql: pins },
   { name: "0058_user_groups.sql", scope: "workspace", sql: userGroups },
   { name: "0059_dnd.sql", scope: "workspace", sql: dnd },
+  { name: "0060_profile_fields.sql", scope: "workspace", sql: profileFields },
   { name: "0061_reminders.sql", scope: "workspace", sql: reminders },
   { name: "0062_statuses.sql", scope: "workspace", sql: statuses },
 ];

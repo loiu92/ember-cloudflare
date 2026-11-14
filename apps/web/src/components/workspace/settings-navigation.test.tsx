@@ -109,8 +109,7 @@ describe("Chat bots page", () => {
     const { rerender } = render(<SettingsNavigation section="chat-bots" administrator />);
     expect(screen.getByRole("link", { name: "Chat bots" })).toHaveAttribute("href", "/account/bots");
     expect(current()).toHaveTextContent("Chat bots");
-    expect(links().map((link) => link.textContent)).toEqual(["General", "Rooms and permissions", "Membership", "User groups", "Domain settings", "Chat bots", "AI assistant", "Huddles", "Custom styles"]);
-    rerender(<SettingsNavigation section="community-settings" administrator={false} />);
+    expect(links().map((link) => link.textContent)).toEqual(["General", "Rooms and permissions", "Membership", "User groups", "Profile fields", "Domain settings", "Chat bots", "AI assistant", "Huddles", "Custom styles"]);    rerender(<SettingsNavigation section="community-settings" administrator={false} />);
     expect(screen.queryByRole("link", { name: "Chat bots" })).not.toBeInTheDocument();
   });
 });
@@ -170,8 +169,7 @@ describe("Custom CSS", () => {
 });
 
 describe("Custom domain", () => {
-  it("links administrators to Domain settings, after User groups, and members not at all", () => {
-    const { rerender } = render(<SettingsNavigation section="domain-settings" administrator />);
+  it("links administrators to Domain settings, after User groups then Profile fields, and members not at all", () => {    const { rerender } = render(<SettingsNavigation section="domain-settings" administrator />);
     const domain = screen.getByRole("link", { name: "Domain settings" });
     expect(domain).toHaveAttribute("href", "/account/edit#domain-settings");
     expect(domain.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
