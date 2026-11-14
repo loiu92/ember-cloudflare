@@ -616,11 +616,7 @@ export class MessageStore {
         now,
         now,
         seq,
-<<<<<<< HEAD
         cards ? JSON.stringify(cards) : null,
-=======
-        cards ? JSON.stringify(cards) : null,
->>>>>>> feat/slack-web-api
         this.roomId,
         message.id,
       ),
