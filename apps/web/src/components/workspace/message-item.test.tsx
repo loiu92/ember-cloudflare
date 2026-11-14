@@ -1,6 +1,6 @@
 import type { Boost, Card, DirectoryUser, Message, StoredFile, User } from "@ember/protocol";
 import { bodyFromPlainText } from "@ember/richtext/dom";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -156,6 +156,11 @@ function sharedFile(share: ReturnType<typeof vi.fn>) {
 /** Answers media queries as a page does where a mouse can hover. */
 const withMouse = () => {
   vi.stubGlobal("matchMedia", (media: string) => ({ matches: media === "(hover: hover) and (pointer: fine)", media, addEventListener() {}, removeEventListener() {} }));
+};
+
+/** Answers media queries as a page does on a phone or tablet, whose pointer is coarse. */
+const withTouch = () => {
+  vi.stubGlobal("matchMedia", (media: string) => ({ matches: media === "(pointer: coarse)", media, addEventListener() {}, removeEventListener() {} }));
 };
 
 describe("Send a message", () => {
@@ -931,6 +936,209 @@ describe("More actions on a message", () => {
     await user.hover(optionsOn("Hello"));
     expect(optionsOn("Hello")).toHaveAttribute("aria-expanded", "false");
     expect(screen.getByRole("tooltip")).toHaveTextContent("Message options");
+  });
+});
+
+describe("The message drawer", () => {
+  /** The drawer, while it's open. */
+  const drawer = () => screen.getByRole("dialog", { name: "Message actions" });
+
+  /** The drawer's quick reactions. */
+  const quickReactions = () => within(drawer()).getByRole("group", { name: "Quick reactions" });
+
+  /** Lays a finger on `element` and holds it still, as a long-press is. */
+  const hold = (element: HTMLElement, at: { x?: number; y?: number } = {}) => {
+    fireEvent.pointerDown(element, { pointerType: "touch", pointerId: 1, clientX: at.x ?? 10, clientY: at.y ?? 10 });
+    act(() => vi.advanceTimersByTime(450));
+  };
+
+  afterEach(() => vi.useRealTimers());
+
+  it("opens on a touch long-press, shading the message, with the bar's quick reactions and More actions' items", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+    expect(article).not.toHaveClass("bg-hover");
+
+    hold(article);
+    expect(article).toHaveClass("bg-hover");
+    expect(within(quickReactions()).getAllByRole("button").map((button) => button.textContent)).toEqual(["👍Thumbs up", "👏Clapping", "👋Waving hand"]);
+    expect(
+      within(drawer())
+        .getAllByRole("button")
+        .filter((button) => !quickReactions().contains(button))
+        .map((button) => button.textContent),
+    ).toEqual(["Quote", "Copy text", "Copy link", "More actions"]);
+    // A finger needs none of the tooltip's names to find them, and the first reaction takes its focus.
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(within(quickReactions()).getByRole("button", { name: "Thumbs up" })).toHaveFocus();
+  });
+
+  it("offers Edit message and Delete message on your own messages, and Delete asks first", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    const { actions, article, editors } = show(message(), { me: ada });
+
+    hold(article);
+    expect(within(drawer()).getByRole("button", { name: "Edit message" })).toBeInTheDocument();
+    const remove = within(drawer()).getByRole("button", { name: "Delete message" });
+    expect(remove).toHaveClass("text-negative");
+
+    fireEvent.click(remove);
+    expect(confirm).toHaveBeenCalledWith("Are you sure you want to delete this message?");
+    expect(actions.remove).not.toHaveBeenCalled();
+    expect(drawer()).toBeInTheDocument();
+
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Delete message" }));
+    expect(actions.remove).toHaveBeenCalledWith("m1");
+    expect(editors.returnFocus).toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+  });
+
+  it("gives up on a drift, a second finger, a scroll or a lift, and never opens for a mouse", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+
+    // A finger that scrolls away is reading, not holding.
+    fireEvent.pointerDown(article, { pointerType: "touch", pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(article, { pointerType: "touch", pointerId: 1, clientX: 30, clientY: 10 });
+    act(() => vi.advanceTimersByTime(450));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+
+    // Nor does one that lands a second finger, or a page that scrolls under it.
+    fireEvent.pointerDown(article, { pointerType: "touch", pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerDown(article, { pointerType: "touch", pointerId: 2, clientX: 40, clientY: 40 });
+    act(() => vi.advanceTimersByTime(450));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+
+    fireEvent.pointerDown(article, { pointerType: "touch", pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.scroll(document);
+    act(() => vi.advanceTimersByTime(450));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+
+    // A finger that lifts early is tapping, which the row does as it always did.
+    fireEvent.pointerDown(article, { pointerType: "touch", pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerUp(article, { pointerType: "touch", pointerId: 1 });
+    act(() => vi.advanceTimersByTime(450));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+
+    // A mouse can hold a button all day, and opens nothing by it.
+    fireEvent.pointerDown(article, { pointerType: "mouse", pointerId: 1, clientX: 10, clientY: 10 });
+    act(() => vi.advanceTimersByTime(450));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+  });
+
+  it("leaves a hold on Message options to the button, which opens and closes its own bar", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+    hold(within(article).getByRole("button", { name: "Message options" }));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+  });
+
+  it("waits for a coarse pointer, so a page without one never opens it, nor for a message on its way", () => {
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+    hold(article);
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+
+    withTouch();
+    cleanup();
+    show({ ...message(), pending: true }, { me: grace });
+    hold(screen.getByRole("article"));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+  });
+
+  it("reacts from the drawer, closes, shades the message no more, and hands focus to Message options", async () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { actions, article } = show(message(), { me: grace });
+    hold(article);
+    vi.useRealTimers();
+
+    fireEvent.click(within(quickReactions()).getByRole("button", { name: "Clapping" }));
+    expect(actions.boost).toHaveBeenCalledWith("m1", "👏");
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+    expect(article).not.toHaveClass("bg-hover");
+    await waitFor(() => expect(optionsOn("Hello")).toHaveFocus());
+  });
+
+  it("quotes the message into the composer, and closes", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { editors, article } = show(message({ plainText: "Third time's a charm." }), { me: grace });
+    hold(article);
+    vi.useRealTimers();
+
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Quote" }));
+    expect(editors.reply).toHaveBeenCalledWith(
+      `<blockquote><p>Third time's a charm.</p></blockquote><cite>Ada <a href="${location.origin}/rooms/general/@m1">#</a></cite><p><br></p>`,
+    );
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+  });
+
+  it("copies its text and its address, keeping the drawer open", async () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message({ plainText: "Copy me, please" }), { me: grace });
+    hold(article);
+    vi.useRealTimers();
+
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Copy text" }));
+    await waitFor(() => expect(navigator.clipboard.readText()).resolves.toBe("Copy me, please"));
+    fireEvent.click(within(drawer()).getByRole("button", { name: "Copy link" }));
+    await waitFor(() => expect(navigator.clipboard.readText()).resolves.toBe(`${location.origin}/rooms/general/@m1`));
+    expect(drawer()).toBeInTheDocument();
+  });
+
+  it("hands over to More actions, which closes it and opens the message's More actions panel", async () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+    hold(article);
+    vi.useRealTimers();
+
+    fireEvent.click(within(drawer()).getByRole("button", { name: "More actions" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "More actions" })).toHaveTextContent("QuoteCopy textCopy link"));
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+    expect(optionsOn("Hello")).toHaveAttribute("aria-expanded", "true");
+    await waitFor(() => expect(within(screen.getByRole("group", { name: "More actions" })).getByRole("button", { name: "Quote" })).toHaveFocus());
+  });
+
+  it("closes on Escape and hands focus back to Message options", async () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message(), { me: grace });
+    hold(article);
+    vi.useRealTimers();
+
+    fireEvent.keyDown(drawer(), { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Message actions" })).not.toBeInTheDocument();
+    expect(article).not.toHaveClass("bg-hover");
+    await waitFor(() => expect(optionsOn("Hello")).toHaveFocus());
+  });
+
+  it("swallows the one click the held finger leaves, so opening the drawer doesn't follow a link", () => {
+    withTouch();
+    vi.useFakeTimers();
+    const { article } = show(message({ plainText: "Docs at www.example.com" }), { me: grace });
+    const link = within(article).getByRole("link", { name: "www.example.com" });
+
+    hold(link);
+    expect(drawer()).toBeInTheDocument();
+    const first = vi.fn();
+    link.addEventListener("click", first);
+    fireEvent.click(link);
+    expect(first).not.toHaveBeenCalled();
+    link.removeEventListener("click", first);
+
+    // The next tap goes, as it always did.
+    const second = vi.fn();
+    link.addEventListener("click", second);
+    fireEvent.click(link);
+    expect(second).toHaveBeenCalledOnce();
   });
 });
 

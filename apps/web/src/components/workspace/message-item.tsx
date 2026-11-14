@@ -3,6 +3,8 @@ import type { CardAction, Me, Message, User } from "@ember/protocol";
 import { displayBody, isAllEmoji, type DisplayNode } from "@ember/richtext/dom";
 import { NavArrowRight } from "@/components/icons/iconoir";
 import { PageLink } from "@/components/page-link";
+import { useLongPress } from "@/hooks/use-long-press";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { PeopleContext } from "@/hooks/use-directory";
 import { messagePath, permalinkOf, threadPath } from "@/hooks/use-route";
 import { cardsQuote, dateTimeLabel, lastReplyLabel, timeLabel } from "@/lib/messages";
@@ -11,9 +13,10 @@ import { cn } from "@/lib/utils";
 import { AgentBadge, isAgent } from "./agent-badge";
 import { Attachment } from "./attachment";
 import { BotCards } from "./bot-card";
-import { MessageActionsMenu, type MessageActionsHandle } from "./message-actions-menu";
+import { closeOpenBar, MessageActionsMenu, type MessageActionsHandle } from "./message-actions-menu";
 import { MessageBody } from "./message-body";
 import { MessageBoosts } from "./message-boosts";
+import { MessageDrawer } from "./message-drawer";
 import { FixedMessageEditor, MessageEditor, type MessageEditorHandle } from "./message-editor";
 import { UploadCard } from "./upload-card";
 import { AvatarLink, UserAvatar, userTitle } from "./user-avatar";
@@ -217,6 +220,13 @@ export const MessageItem = memo(function MessageItem({ message, me, threaded: fo
   const customField = useRef<HTMLInputElement>(null);
   // The Custom reaction form goes as the editor opens, as the editor replaces the whole message.
   if (customizing && (editing || !actions)) setCustomizing(false);
+  // Holding a message on a touch screen opens its drawer, where a mouse has the bar and More actions.
+  const coarse = useMediaQuery("(pointer: coarse)");
+  const [drawer, setDrawer] = useState(false);
+  const press = useLongPress(article, actions !== null && !pending && !editing && coarse, () => {
+    closeOpenBar();
+    setDrawer(true);
+  });
   const mine = message.creator.id === me.id;
   const created = new Date(message.createdAt);
   // Any message that mentions you, yours too, as Campfire's message_formatter.js means to mark them,
@@ -264,6 +274,7 @@ export const MessageItem = memo(function MessageItem({ message, me, threaded: fo
       ref={article}
       // An upload stays busy until it's failed, so screen readers say why it failed but not every step it takes.
       aria-busy={(pending && !upload?.error) || undefined}
+      {...press.props}
       className={cn(
         "group/message relative grid grid-cols-[36px_minmax(0,1fr)] gap-x-2 px-5 hover:bg-message-hover max-md:grid-cols-[30px_minmax(0,1fr)] max-md:gap-x-2.5 max-md:px-3",
         // A message that starts a run has 4px more above it, so a new author starts 12px below the
@@ -274,6 +285,11 @@ export const MessageItem = memo(function MessageItem({ message, me, threaded: fo
         "touch:min-h-11",
         pending && !upload && "opacity-60",
         open && "bg-hover",
+        // A finger holding the message shades it, and the one whose drawer is open is marked as theirs.
+        press.holding && "bg-message-hover",
+        drawer && "bg-hover",
+        // A held press selects nothing, and draws no callout of the text under the finger.
+        (press.holding || drawer) && "select-none [-webkit-touch-callout:none]",
       )}
     >
       {/* The avatar sits 8px down, level with the author's name, and 4px below where the editor starts. */}
@@ -389,6 +405,30 @@ export const MessageItem = memo(function MessageItem({ message, me, threaded: fo
           }}
           // The form opens with its field focused, or, open already, keeps what's written in it and focuses it.
           onNewBoost={() => (customizing ? customField.current?.focus() : setCustomizing(true))}
+        />
+      )}
+
+      {actions && !pending && !editing && (
+        <MessageDrawer
+          open={drawer}
+          message={message}
+          nodes={quoted}
+          editable={mine || me.administrator}
+          onOpenChange={setDrawer}
+          onReact={(emoji) => actions.boost(message.id, emoji)}
+          onQuote={editors.reply}
+          onEdit={() => editors.open(message.id)}
+          // As from the editor, the composer takes focus as the message goes.
+          onDelete={() => {
+            if (!actions.remove(message.id)) return false;
+            editors.returnFocus();
+            return true;
+          }}
+          onMoreActions={() => {
+            setDrawer(false);
+            menu.current?.openActions();
+          }}
+          onReturnFocus={() => menu.current?.focus()}
         />
       )}
     </article>
