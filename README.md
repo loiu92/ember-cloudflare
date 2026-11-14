@@ -165,6 +165,7 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | **Bots that answer** | ✅ through a webhook per bot | ✅ through Slack apps |
 | **Slash commands and bot events** | ✅ a bot answers /commands and hears the rooms it is in | ✅ |
 | **An MCP server of your own** | ✅ your workspace over MCP, with personal access tokens | ✅ MCP server and directory |
+| **Export everything** | ✅ an administrator exports every message, DMs included, as NDJSON | ✅ on Business+ (compliance exports) |
 | **Ways to join** | Join link and QR code, email invitations, email domains, open sign-up with Turnstile, Memberful | Invitations, invite links and approved email domains |
 | **Guests** | ✅ a guest for one room, whose stay ends when you choose | ✅ guest accounts (paid plans) |
 | **Single sign-on** | Memberful, for membership communities | Google on every plan, and SAML SSO with SCIM on Business+ |
