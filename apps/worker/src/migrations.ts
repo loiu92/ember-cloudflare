@@ -57,6 +57,7 @@ import agentTools from "../migrations/0056_agent_tools.sql";
 import pins from "../migrations/0057_pins.sql";
 import userGroups from "../migrations/0058_user_groups.sql";
 import dnd from "../migrations/0059_dnd.sql";
+import reminders from "../migrations/0061_reminders.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -137,11 +138,10 @@ export const MIGRATIONS: Migration[] = [
   { name: "0054_agent_thinking_levels.sql", scope: "workspace", sql: agentThinkingLevels },
   { name: "0055_apps.sql", scope: "workspace", sql: apps },
   { name: "0056_agent_tools.sql", scope: "workspace", sql: agentTools },
-<<<<<<< HEAD
   { name: "0057_pins.sql", scope: "room", sql: pins },
   { name: "0058_user_groups.sql", scope: "workspace", sql: userGroups },
   { name: "0059_dnd.sql", scope: "workspace", sql: dnd },
->>>>>>> feat/do-not-disturb
+  { name: "0061_reminders.sql", scope: "workspace", sql: reminders },
 ];
 
 /**
