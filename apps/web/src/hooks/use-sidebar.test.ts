@@ -854,7 +854,7 @@ describe("Do not disturb", () => {
   it("says what the hush has become once a connection that dropped has come back", async () => {
     const onDndChanged = vi.fn();
     const onDndConnecting = vi.fn();
-    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, onDndChanged, onDndConnecting));
+    renderHook(() => useSidebar(ada, () => {}, undefined, undefined, undefined, undefined, undefined, onDndChanged, onDndConnecting));
     await settle();
     socket().connect();
     expect(onDndConnecting).toHaveBeenCalled();
