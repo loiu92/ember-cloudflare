@@ -1036,10 +1036,7 @@ export class ChatRoom extends DurableObject<Env> {
    * stays as it was, its update time included, as Rails saves nothing then.
    */
   private async edit(store: MessageStore, message: Message, body: StoredBody, now: string): Promise<Message> {
-<<<<<<< HEAD
     if (body.html === message.body && JSON.stringify(body.cards) === JSON.stringify(message.cards)) return message;
-=======
->>>>>>> feat/slack-web-api
     const cards = "cards" in body && body.cards ? body.cards : undefined;
     if (body.html === message.body && !message.cards && !cards) return message;
     const { message: edited, seq } = await store.updateBody(message, body, now);

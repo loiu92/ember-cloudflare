@@ -543,7 +543,7 @@ export class MessageStore {
           now,
           seq,
           posted ? JSON.stringify(posted.file) : null,
-          body.cards ? JSON.stringify(body.cards) : null,
+          cards ? JSON.stringify(cards) : null,
           inThread?.parent.id ?? null,
           inRoom ? 1 : 0,
         ),
@@ -617,7 +617,7 @@ export class MessageStore {
         now,
         seq,
 <<<<<<< HEAD
-        body.cards ? JSON.stringify(body.cards) : null,
+        cards ? JSON.stringify(cards) : null,
 =======
         cards ? JSON.stringify(cards) : null,
 >>>>>>> feat/slack-web-api
@@ -628,12 +628,7 @@ export class MessageStore {
       ...logIndexingRepliesTo(this.roomId, message, body.plainText),
     ]);
     const { cards: _, ...rest } = message;
-<<<<<<< HEAD
-    const edited = { ...rest, body: body.html, plainText: body.plainText, mentions: body.mentions, updatedAt: now, editedAt: now };
-    return { message: body.cards ? { ...edited, cards: body.cards } : edited, seq };
-=======
     return { message: { ...rest, body: body.html, plainText: body.plainText, mentions: body.mentions, updatedAt: now, editedAt: now, ...(cards && { cards }) }, seq };
->>>>>>> feat/slack-web-api
   }
 
   /**
