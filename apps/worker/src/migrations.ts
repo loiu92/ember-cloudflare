@@ -52,6 +52,7 @@ import huddles from "../migrations/0051_huddles.sql";
 import agentPromptTemplates from "../migrations/0052_agent_prompt_templates.sql";
 import unbannedOpenRooms from "../migrations/0053_unbanned_open_rooms.sql";
 import agentThinkingLevels from "../migrations/0054_agent_thinking_levels.sql";
+<<<<<<< HEAD
 import apps from "../migrations/0055_apps.sql";
 import agentTools from "../migrations/0056_agent_tools.sql";
 import waitingCalls from "../migrations/0057_waiting_calls.sql";
@@ -71,6 +72,9 @@ import saves from "../migrations/0070_saves.sql";
 import guests from "../migrations/0071_guests.sql";
 import commands from "../migrations/0072_commands.sql";
 import reminderPushes from "../migrations/0074_reminder_pushes.sql";
+=======
+import apiTokens from "../migrations/0066_tokens.sql";
+>>>>>>> 033017ae (Give a person API tokens, whose secret shows once, that open Ember as them)
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -149,6 +153,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0052_agent_prompt_templates.sql", scope: "workspace", sql: agentPromptTemplates },
   { name: "0053_unbanned_open_rooms.sql", scope: "workspace", sql: unbannedOpenRooms },
   { name: "0054_agent_thinking_levels.sql", scope: "workspace", sql: agentThinkingLevels },
+<<<<<<< HEAD
   { name: "0055_apps.sql", scope: "workspace", sql: apps },
   { name: "0056_agent_tools.sql", scope: "workspace", sql: agentTools },
   { name: "0057_waiting_calls.sql", scope: "room", sql: waitingCalls },
@@ -168,6 +173,9 @@ export const MIGRATIONS: Migration[] = [
   { name: "0071_guests.sql", scope: "workspace", sql: guests },
   { name: "0072_commands.sql", scope: "workspace", sql: commands },
   { name: "0074_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
+=======
+  { name: "0066_tokens.sql", scope: "workspace", sql: apiTokens },
+>>>>>>> 033017ae (Give a person API tokens, whose secret shows once, that open Ember as them)
 ];
 
 /**
