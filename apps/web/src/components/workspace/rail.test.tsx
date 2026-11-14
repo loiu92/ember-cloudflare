@@ -14,7 +14,6 @@ const savedClosed: Saved = { on: false, count: 0, onToggle: () => {} };
 const railAt = (current: RailPage, activity = activityOff, me = ada, onNewDirect = () => {}, newRelease: string | null = null, dndUntil: string | null = null, saved = savedClosed) => (
   <Rail me={me} workspaceName="Analytical Engines" current={current} activity={activity} dndUntil={dndUntil} saved={saved} newRelease={newRelease} onNewDirect={onNewDirect} />
 );
-);
 
 afterEach(() => history.replaceState(null, "", "/"));
 

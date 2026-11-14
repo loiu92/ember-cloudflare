@@ -1006,7 +1006,7 @@ describe("Save a message for later", () => {
       forget: vi.fn(async () => {}),
       saveOf: (messageId) => (saved && messageId === shown.id ? { id: "saved-1", roomId: shown.roomId, messageId: shown.id, createdAt: 0, message: shown } : null),
     };
-    const actions = { boost: vi.fn(() => true), unboost: vi.fn(() => true), edit: vi.fn(() => true), remove: vi.fn(() => true), click: vi.fn(() => Promise.resolve(true)) };
+    const actions = { boost: vi.fn(() => true), unboost: vi.fn(() => true), pin: vi.fn(() => true), unpin: vi.fn(() => true), edit: vi.fn(() => true), remove: vi.fn(() => true), click: vi.fn(() => Promise.resolve(true)) };
     const editors = { open: vi.fn(), close: vi.fn(), returnFocus: vi.fn(), attach: vi.fn(), reply: vi.fn() };
     const { container } = render(
       <FlashProvider workspace>

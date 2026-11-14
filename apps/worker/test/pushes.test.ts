@@ -474,7 +474,7 @@ describe("Who gets a push", () => {
           store.pushable = pushable;
           asked = true;
           await released;
-          answers.push(await pushable(id));
+          answers.push(await pushable(id, Date.now()));
           return answers.at(-1)!;
         };
       });
