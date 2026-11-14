@@ -60,6 +60,7 @@ import dnd from "../migrations/0059_dnd.sql";
 import profileFields from "../migrations/0060_profile_fields.sql";
 import reminders from "../migrations/0061_reminders.sql";
 import statuses from "../migrations/0062_statuses.sql";
+import saves from "../migrations/0063_saves.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -146,6 +147,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0060_profile_fields.sql", scope: "workspace", sql: profileFields },
   { name: "0061_reminders.sql", scope: "workspace", sql: reminders },
   { name: "0062_statuses.sql", scope: "workspace", sql: statuses },
+  { name: "0063_saves.sql", scope: "workspace", sql: saves },
 ];
 
 /**

@@ -13,6 +13,7 @@ import { useMounted } from "@/hooks/use-mounted";
 import { useReleaseCheck } from "@/hooks/use-release-check";
 import { DismissReminder, isDue, useReminders } from "@/hooks/use-reminders";
 import { useSidebar } from "@/hooks/use-sidebar";
+import { SavesContext, useSaves } from "@/hooks/use-saves";
 import { ApiError, dismissInvitation, isSignedOut, startDirect } from "@/lib/api";
 import { hearHuddleEnd, leaveHuddle, muteHuddle } from "@/lib/huddle-store";
 import { whenIdle } from "@/lib/idle";
@@ -32,6 +33,7 @@ import { NewDirectDialog } from "./new-direct-dialog";
 import { DrawerOpen, PageHeader } from "./page-header";
 import { Rail, type RailPage } from "./rail";
 import { RoomView, type RoomViewHandle } from "./room-view";
+import { SavedPanel } from "./saved-panel";
 import { OpenSearchContext, SearchBox, type SearchBoxOptions } from "./search-box";
 import { SettingsLayout, settingsSectionOf, type SettingsPlace } from "./settings-navigation";
 import { Sidebar } from "./sidebar";
@@ -445,6 +447,16 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
     },
     [failed],
   );
+  // The messages saved for later, whose list comes when the page loads, and again after a save or a
+  // remove here. Another tab's saves aren't heard of until it loads again.
+  const saver = useSaves(failed);
+  // Whether the Saved pane is open beside the room, which lives as long as the page, as Activity's
+  // filter does. A thread open beside the room takes its place, so one opening closes the other, and
+  // a permalink followed closes it too, where below 1180px wide it covers the message it jumped to.
+  const [savedOpen, setSavedOpen] = useState(false);
+  useEffect(() => {
+    if (route.page === "room" && (route.threadId !== undefined || route.messageId !== undefined)) setSavedOpen(false);
+  }, [route]);
   // A room just saved takes its place in the list, and one that's gone leaves it.
   const listRoom = useCallback((room: Room) => changeRooms({ type: "saved", room }), []);
   const unlistRoom = useCallback((roomId: RoomId) => changeRooms({ type: "gone", roomId }), []);
@@ -604,6 +616,22 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
       });
     },
   };
+  // The rail's Saved control, by Activity's conventions: it opens the pane beside the room shown, or
+  // goes home to the last room visited for it from a page of community settings. Opening it asks for
+  // the list again, which a failed ask never brought, but never asks a room for anything, so it marks
+  // nothing read.
+  const saved = {
+    on: savedOpen,
+    count: saver.saves?.length ?? 0,
+    onToggle: () => {
+      setDrawerOpen(false);
+      if (savedOpen) return setSavedOpen(false);
+      saver.load();
+      if (!settings && route.page === "room") return setSavedOpen(true);
+      navigate("/");
+      afterNavigating(() => setSavedOpen(true));
+    },
+  };
   // Cmd+F or Ctrl+F opens the search box, as it opens Slack's: in the room shown, or with the search the
   // results page shows, or for everything. In a dialog, the search box among them, the key is the browser's.
   const findPressed = useEffectEvent((event: KeyboardEvent) => {
@@ -665,7 +693,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   // once the server's list has come: the empty one a failed first load leaves knows nothing of what's unread.
   useAppBadge(answered ? activity.unread : null);
   const rail = (
-    <Rail me={me} workspaceName={workspaceName} current={RAIL_PAGES[route.page]} activity={activity} dndUntil={dndUntil} newRelease={newRelease} onNewDirect={openNewDirect} />
+    <Rail me={me} workspaceName={workspaceName} current={RAIL_PAGES[route.page]} activity={activity} dndUntil={dndUntil} saved={saved} newRelease={newRelease} onNewDirect={openNewDirect} />
   );
   const sidebar = (
     <Sidebar
@@ -842,6 +870,8 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
             settings && "[--spacing-sidebar:244px] max-md:grid-rows-[calc(56px+env(safe-area-inset-top))_auto_minmax(0,1fr)]",
             // A thread or the Pinned panel open beside its room, from 1180px wide, which takes 420px of the room's width.
             "min-[1180px]:has-[>[data-thread],>[data-pins]]:grid-cols-[calc(var(--spacing-rail)+env(safe-area-inset-left))_var(--spacing-sidebar)_minmax(0,1fr)_420px]",
+            // Or the Saved pane open beside it, which takes the same of the room's width.
+            "min-[1180px]:has-[>[data-saved]]:grid-cols-[calc(var(--spacing-rail)+env(safe-area-inset-left))_var(--spacing-sidebar)_minmax(0,1fr)_420px]",
           )}
         >
           <SkipLink />
@@ -896,6 +926,16 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
           </SheetContent>
 
           {page()}
+          {/* The Saved pane, beside the room shown, whose place a thread open beside it has taken. */}
+          {savedOpen && room !== null && (
+            <SavedPanel
+              me={me}
+              rooms={rooms ?? NO_ROOMS}
+              saves={saver.saves}
+              onClose={() => setSavedOpen(false)}
+              onForget={(id) => void saver.forget(id)}
+            />
+          )}
           <MovedNotice />
           {newDirect && (
             <NewDirectDialog
@@ -960,9 +1000,11 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
               <DirectoryLoaded value={directory.loaded}>
                 <SettingsLayout value={settings}>
                   <OpenSearchContext value={openSearch}>
-                    <HuddlesContext value={huddles}>
-                    <DismissReminder value={dismissReminder}>{layout}</DismissReminder>
-                  </HuddlesContext>
+                    <SavesContext value={saver}>
+                      <HuddlesContext value={huddles}>
+                        <DismissReminder value={dismissReminder}>{layout}</DismissReminder>
+                      </HuddlesContext>
+                    </SavesContext>
                   </OpenSearchContext>
                 </SettingsLayout>
               </DirectoryLoaded>
