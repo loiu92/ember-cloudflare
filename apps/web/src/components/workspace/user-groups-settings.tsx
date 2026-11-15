@@ -1,8 +1,9 @@
-import { useContext, useEffect, useEffectEvent, useState, type FormEvent } from "react";
+import { useContext, useEffect, useEffectEvent, useRef, useState, type FormEvent } from "react";
 import { MAX_GROUP_MEMBERS, MAX_GROUP_NAME_LENGTH, type GroupId, type UserGroup, type UserId } from "@ember/protocol";
 import { FIELD_INPUT, Field } from "@/components/field";
 import { EditPencil, Minus, Plus } from "@/components/icons/iconoir";
 import { DirectoryLoaded, DirectoryReloading, DirectoryStale, PeopleContext } from "@/hooks/use-directory";
+import { useMounted } from "@/hooks/use-mounted";
 import { ApiError, changeUserGroup, createUserGroup, deleteUserGroup, fetchUserGroups, isSignedOut } from "@/lib/api";
 import { byName } from "@/lib/people";
 import { cn } from "@/lib/utils";
@@ -52,10 +53,9 @@ export function UserGroups({ onSaved, reloadDirectory, onFailed }: Props) {
     return () => void (stopped = true);
   }, [onFailed]);
 
-  /** Shows `group` as the server answers it, closes the form, and says the change saved. */
+  /** Shows `group` as the server answers it, and says the change saved; the form whose save it was closes itself. */
   const saved = (group: UserGroup) => {
     setGroups((groups) => (groups?.some((listed) => listed.id === group.id) ? groups.map((listed) => (listed.id === group.id ? group : listed)) : [...(groups ?? []), group]));
-    setEditing(null);
     reloadDirectory();
     onSaved();
   };
@@ -135,9 +135,9 @@ interface GroupFormProps {
   group: UserGroup | null;
   /** Shows the group as the server answers it, once it has. */
   onSaved: (group: UserGroup) => void;
-  /** Closes the form, keeping the group as it was. */
+  /** Closes the form, Cancel keeping the group as it was and a landed save leaving it as the server answered it. */
   onCancel: () => void;
-  /** Loads the people directory again, which a save its last load failed under waits for. */
+  /** Loads the people directory again, which a save waits for while one is under way, and asks for when its last has failed. */
   reloadDirectory: () => void;
   /** Says why saving failed, as the workspace's alerts do. */
   onFailed: (error: unknown) => void;
@@ -149,19 +149,27 @@ interface GroupFormProps {
  * together, and shows what the server refused them with, as a name another group has, however it's
  * capitalised. A member the directory lists gone, as a deactivated one's id is, is let go of, for no
  * checkbox offers them to be unchecked — once the directory has come and stayed come, which a load
- * under way or one that has failed may yet correct.
+ * under way or one that has failed may yet correct. A save waits as much for the directory to have
+ * settled come, and a load that has failed again lets it go to be tried. A save that lands after its
+ * form is gone — another having opened while it was under way — shows its group and says it saved all
+ * the same, and closes nothing: the form open keeps what's typed in it.
  */
 function GroupForm({ group, onSaved, onCancel, reloadDirectory, onFailed }: GroupFormProps) {
   const directory = useContext(PeopleContext);
   const loaded = useContext(DirectoryLoaded);
   const stale = useContext(DirectoryStale);
   const reloading = useContext(DirectoryReloading);
+  const mounted = useMounted();
   const people = byName([...directory.values()].filter((person) => person.status === "active" && person.role !== "bot"));
   const [name, setName] = useState(group?.name ?? "");
   const [members, setMembers] = useState<ReadonlySet<UserId>>(() => new Set(group?.memberIds ?? []));
   const [saving, setSaving] = useState(false);
-  // A save the directory's last load failed under, which waits for a load that comes.
+  // A save the directory has yet to settle come under, which waits for a load that comes.
   const [waiting, setWaiting] = useState(false);
+  // Whether the wait has seen a load under way, which the reload a held save asks for sets as it
+  // starts: a settle that leaves the directory stale says the load failed once one has been seen,
+  // and is the wait as it was set before then.
+  const sawLoad = useRef(false);
   const [refused, setRefused] = useState<string | null>(null);
 
   // A group keeps the id of a member the directory lists gone, whom the checkboxes offer no line to
@@ -196,7 +204,12 @@ function GroupForm({ group, onSaved, onCancel, reloadDirectory, onFailed }: Grou
     const memberIds = loaded ? [...members].filter((id) => directory.get(id)?.status === "active") : [...members];
     const change = group ? changeUserGroup(group.id, { name, memberIds }) : createUserGroup({ name, memberIds });
     change.then(
-      onSaved,
+      (saved) => {
+        onSaved(saved);
+        // The form whose save completed closes, and only while it is still the one open: a form opened
+        // while the save was under way keeps what's typed in it.
+        if (mounted.current) onCancel();
+      },
       (error: unknown) => {
         if (isSignedOut(error)) return onFailed(error);
         setSaving(false);
@@ -209,21 +222,35 @@ function GroupForm({ group, onSaved, onCancel, reloadDirectory, onFailed }: Grou
     event.preventDefault();
     setSaving(true);
     setRefused(null);
-    // The directory's last load has failed, which leaves it listing people as it did before it: a
-    // member it lists gone may be back, whom letting go would drop for that listing alone. The card
-    // loads it again, as it does once a change has saved, and the save waits for a load that comes,
-    // as the letting go waits for the one under way.
-    if (stale) {
+    // The directory has yet to settle come, which a save doesn't go against: a load under way may
+    // list a member back whom this listing has gone, as one another administrator has just added is,
+    // and one that has failed leaves it as it was before it, which may list gone a member who's
+    // here. The save waits for a load to settle — the one under way, or one the card asks for, as it
+    // does once a change has saved.
+    if (stale || reloading) {
+      sawLoad.current = false;
       setWaiting(true);
-      reloadDirectory();
+      if (!reloading) reloadDirectory();
       return;
     }
     send();
   };
 
-  // The save a failed load held goes once a load of the directory has come, and none is under way.
+  // The save a load held goes once one has come, and none is under way. One that has failed again —
+  // a load seen under way that has settled with the directory still stale — lets the save go to be
+  // tried once more, the page having said that load failed, rather than hold it for good.
   useEffect(() => {
-    if (!waiting || stale || reloading) return;
+    if (!waiting) return;
+    if (reloading) {
+      sawLoad.current = true;
+      return;
+    }
+    if (stale) {
+      if (!sawLoad.current) return;
+      setWaiting(false);
+      setSaving(false);
+      return;
+    }
     setWaiting(false);
     send();
   }, [waiting, stale, reloading]);
