@@ -336,8 +336,8 @@ export class ChatRoom extends DurableObject<Env> {
   private readonly clicking = new Map<UserId, number>();
   /** How many commands each person has waiting on bots' webhooks, as clicks are. */
   private readonly commanding = new Map<UserId, number>();
-  /** How many of a room's message events each person has waiting on bots' webhooks, as their commands are. */
-  private readonly eventing = new Map<UserId, number>();
+  /** Each person's message events waiting on bots' webhooks, as their commands are, with how many deliveries of each are out. */
+  private readonly eventing = new Map<UserId, Map<string, number>>();
   private readonly answers = new JobQueue(ANSWERS_AT_ONCE, ANSWERS_WAITING);
   /** The tools' cards a click's call is being made for, by their messages' ids: one at a time each, as what it answers takes the card's place. */
   private readonly calling = new Set<string>();
@@ -1405,13 +1405,9 @@ export class ChatRoom extends DurableObject<Env> {
     for (const webhook of webhooks) {
       // A watched room's events wait as their author's commands do, that one burst can't queue webhook
       // work for every subscribed bot and hold up everyone else's.
-      if (webhook.subscribed) {
-        const waiting = this.eventing.get(webhook.author.id) ?? 0;
-        if (waiting >= COMMANDS_WAITING_EACH) {
-          console.error(`Bot::WebhookJob of message ${webhook.messageId} to bot ${webhook.botId} dropped: ${webhook.author.id}'s earlier events are still waiting`);
-          continue;
-        }
-        this.eventing.set(webhook.author.id, waiting + 1);
+      if (webhook.subscribed && !this.holdEvent(webhook.author.id, webhook.messageId)) {
+        console.error(`Bot::WebhookJob of message ${webhook.messageId} to bot ${webhook.botId} dropped: ${webhook.author.id}'s earlier events are still waiting`);
+        continue;
       }
       this.ctx.waitUntil(this.deliver(roomId, webhook));
     }
@@ -1460,13 +1456,44 @@ export class ChatRoom extends DurableObject<Env> {
       });
       if (!ran) console.error(`${job} dropped: the room's webhook queue is full`);
     } finally {
-      // One of a person's events gives their share of the room's queue back once it's had its turn, as
-      // a command does.
-      if (delivery.subscribed) {
-        const waiting = (this.eventing.get(delivery.author.id) ?? 1) - 1;
-        if (waiting > 0) this.eventing.set(delivery.author.id, waiting);
-        else this.eventing.delete(delivery.author.id);
-      }
+      // One of a person's events gives their share of the room's queue back once every delivery of it
+      // has had its turn, as a command does.
+      if (delivery.subscribed) this.releaseEvent(delivery.author.id, delivery.messageId);
+    }
+  }
+
+  /**
+   * Counts a delivery more of `author`'s message `messageId` among the events of theirs waiting on the
+   * bots' webhooks, and answers whether it may wait: no more of a person's events wait than
+   * `COMMANDS_WAITING_EACH`, and one more of theirs is dropped instead. An event counts once, whatever
+   * bots it goes to, that a room with more of them watching than the budget holds doesn't leave the
+   * later bots' subscriptions starved on every message. The counting happens in one go, without a
+   * turn passed in between, so no two readings of what's waiting can both hold a place.
+   */
+  private holdEvent(author: UserId, messageId: string): boolean {
+    const waiting = this.eventing.get(author);
+    if (!waiting) {
+      this.eventing.set(author, new Map([[messageId, 1]]));
+      return true;
+    }
+    const held = waiting.get(messageId);
+    if (held === undefined && waiting.size >= COMMANDS_WAITING_EACH) return false;
+    waiting.set(messageId, (held ?? 0) + 1);
+    return true;
+  }
+
+  /**
+   * Takes one delivery of `author`'s message `messageId` back off their waiting events, once it has had
+   * its turn, theirs gone once its last delivery has, so each event's share of the budget comes back,
+   * once.
+   */
+  private releaseEvent(author: UserId, messageId: string): void {
+    const waiting = this.eventing.get(author);
+    const held = waiting?.get(messageId) ?? 0;
+    if (held > 1) waiting!.set(messageId, held - 1);
+    else {
+      waiting?.delete(messageId);
+      if (waiting?.size === 0) this.eventing.delete(author);
     }
   }
 
@@ -1525,10 +1552,10 @@ export class ChatRoom extends DurableObject<Env> {
   /**
    * Posts what a bot answers a command with: what it says back, text or a file, is its reply, as
    * `postReply` posts one to a delivery — in the thread `threadId` names, when it's one an event came
-   * by — and a payload of blocks is a new message of its with the cards the blocks make, as a click's
-   * payload takes the clicked card's place. A payload that shows nothing does nothing, as an answer
-   * without one does, and as blank text does, which is a webhook's bare 200. Answers why the room keeps
-   * nothing of it, if it doesn't.
+   * by — and a payload of blocks is a new message of its with the cards the blocks make, in that thread
+   * too, as a click's payload takes the clicked card's place. A payload that shows nothing does nothing,
+   * as an answer without one does, and as blank text does, which is a webhook's bare 200. Answers why
+   * the room keeps nothing of it, if it doesn't.
    */
   private async postCommandAnswer(roomId: RoomId, webhook: WebhookAccess, answer: ClickAnswer<KeptFile>, threadId?: string): Promise<string | null> {
     // Blank text is a webhook's bare 200, which says nothing, as an answer without a payload doesn't.
@@ -1546,10 +1573,15 @@ export class ChatRoom extends DurableObject<Env> {
     return this.serially(async () => {
       if (await this.isDeleted()) return "the room is gone";
       if (!access || (await this.revocationsFor(roomId).refuse([access.bot.id], access.authorizedAt))) return WEBHOOK_CHANGED;
+      const store = this.storeFor(roomId);
+      // What there still is of the thread the event came by, that the cards are posted in it as the
+      // answer's text and files are: gone with the thread's message, as any reply to it would be.
+      const inThread = threadId === undefined ? undefined : await this.inThread(store, threadId, false);
+      if (inThread === null) return THREAD_GONE;
       const body = await this.prepareWithCards(posted.markup, posted.cards);
       if (typeof body === "string") return body;
       // A command's answer is the bot's own, as any reply is: no delivery is sent for it.
-      await this.create(this.storeFor(roomId), access.bot, crypto.randomUUID(), body, new Date().toISOString(), { kind: "reply" });
+      await this.create(store, access.bot, crypto.randomUUID(), body, new Date().toISOString(), { kind: "reply", inThread });
       return null;
     });
   }
