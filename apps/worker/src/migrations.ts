@@ -72,6 +72,7 @@ import guests from "../migrations/0071_guests.sql";
 import commands from "../migrations/0072_commands.sql";
 import apiTokens from "../migrations/0073_tokens.sql";
 import reminderPushes from "../migrations/0074_reminder_pushes.sql";
+import shortcuts from "../migrations/0075_shortcuts.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -170,6 +171,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0072_commands.sql", scope: "workspace", sql: commands },
   { name: "0073_tokens.sql", scope: "workspace", sql: apiTokens },
   { name: "0074_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
+  { name: "0075_shortcuts.sql", scope: "workspace", sql: shortcuts },
 ];
 
 /**
