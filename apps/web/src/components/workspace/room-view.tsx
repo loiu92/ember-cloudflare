@@ -67,7 +67,7 @@ export function RoomView({ room, messageId, threadId, replyId, invitation, onDis
   // Saved open where it covers the room keeps it from counting as seen, so what's said there goes
   // unread until the pane closes, as much as it would in a hidden tab.
   const { state, frames, postMessage, postFiles, runCommand, typing, loadOlder, loadNewer, jump, messageActions, dismissNotice } = useRoom(room.id, me, onSessionChanged, messageId, !savedCovered);
-  const { pins, pinnedIds, listed, refresh } = usePins(room.id, frames);
+  const { pins, pinnedIds, listed, refresh } = usePins(room.id, frames, savedCovered);
   const nameOf = useNameOf();
   const name = roomName(room, me.id, nameOf);
   const direct = room.kind === "direct";

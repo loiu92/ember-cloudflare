@@ -48,13 +48,17 @@ const withBoosts = (listed: ReadonlyMap<string, Message>, id: string, boosts: (g
  * thread's replies, as the room keeps none of one. Each listed message keeps pace with the room, as an
  * edit of, a reaction to or the going of one of theirs comes, and a reply as its parent's changes come.
  */
-export function usePins(roomId: string, frames: RoomFrames) {
+export function usePins(roomId: string, frames: RoomFrames, hold = false) {
   const [pins, setPins] = useState<Pin[] | null>(null);
   const [listed, setListed] = useState<ReadonlyMap<string, Message>>(new Map());
 
   useEffect(() => {
     let closed = false;
-    const refresh = () => frames.send({ type: "pins.list" });
+    // A room the Saved pane covers sends nothing until the pane closes, as a hidden tab's wouldn't:
+    // its ask waits, and leaving hold asks for the pins the held room never listed.
+    const refresh = () => {
+      if (!hold) frames.send({ type: "pins.list" });
+    };
     const stop = frames.listen((frame) => {
       if (closed) return;
       switch (frame.type) {
@@ -92,7 +96,7 @@ export function usePins(roomId: string, frames: RoomFrames) {
       closed = true;
       stop();
     };
-  }, [frames, roomId]);
+  }, [frames, roomId, hold]);
 
   const pinnedIds = useMemo(() => new Set((pins ?? []).map(({ messageId }) => messageId)), [pins]);
   const refresh = useCallback(() => frames.send({ type: "pins.list" }), [frames]);
