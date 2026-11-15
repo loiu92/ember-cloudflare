@@ -9,6 +9,7 @@ import { useAccount } from "@/hooks/use-account";
 import { useAppBadge } from "@/hooks/use-app-badge";
 import { DirectoryLoaded, DirectoryReloading, DirectoryStale, GroupsContext, PeopleContext, ReloadDirectory, useDirectory } from "@/hooks/use-directory";
 import { useHuddle } from "@/hooks/use-huddle";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { useMounted } from "@/hooks/use-mounted";
 import { useReleaseCheck } from "@/hooks/use-release-check";
 import { DismissReminder, isDue, useReminders } from "@/hooks/use-reminders";
@@ -32,7 +33,7 @@ import { ReminderNotice } from "./reminder-notice";
 import { NewDirectDialog } from "./new-direct-dialog";
 import { DrawerOpen, PageHeader } from "./page-header";
 import { Rail, type RailPage } from "./rail";
-import { RoomView, type RoomViewHandle } from "./room-view";
+import { RoomView, THREAD_COVERS_ROOM, type RoomViewHandle } from "./room-view";
 import { SavedPanel } from "./saved-panel";
 import { OpenSearchContext, SearchBox, type SearchBoxOptions } from "./search-box";
 import { SettingsLayout, settingsSectionOf, type SettingsPlace } from "./settings-navigation";
@@ -621,13 +622,19 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
   // The rail's Saved control, by Activity's conventions: it opens the pane beside the room shown, or
   // goes home to the last room visited for it from a page of community settings. Opening it asks for
   // the list again, which a failed ask never brought, but never asks a room for anything, so it marks
-  // nothing read.
+  // nothing read. The pane shows only over a room, so a pane asked for from a page it doesn't show on
+  // counts as closed, whose press opens it rather than closing a pane that isn't there.
+  const coversRoom = useMediaQuery(THREAD_COVERS_ROOM);
+  const savedShown = savedOpen && room !== null;
+  // Below 1180px wide the pane covers the room, which then counts as hidden, and leaves nothing of
+  // itself to reach behind it, as a thread covering the room does.
+  const savedCovered = savedShown && coversRoom;
   const saved = {
-    on: savedOpen,
+    on: savedShown,
     count: saver.saves?.length ?? 0,
     onToggle: () => {
       setDrawerOpen(false);
-      if (savedOpen) return setSavedOpen(false);
+      if (savedShown) return setSavedOpen(false);
       saver.load();
       if (!settings && route.page === "room") return setSavedOpen(true);
       navigate("/");
@@ -825,6 +832,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onSe
               // As the list has it, or as it starts once the room has gone from the list.
               involvement={rooms?.find((r) => r.id === room.id)?.involvement ?? startingInvolvement(room)}
               newSince={opened.roomId === room.id ? opened.newSince : null}
+              savedCovered={savedCovered}
               askForRoom={askForRoom}
               onSessionChanged={onSessionChanged}
               onFailed={failed}
