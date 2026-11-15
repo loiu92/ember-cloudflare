@@ -1654,8 +1654,9 @@ async function route(request: Request, env: Env, pathname: string): Promise<Resp
   if (file) return write ? notFound(request) : serveFile(request, env, file);
   const action = apiAction(request, env, pathname) ?? botAction(request, env, pathname) ?? slackWebAction(request, env, pathname);
   // First: once a route is found, so an unknown address still answers 404, a banned IP address can't
-  // change anything, sign in or join, nor say anything through the MCP server.
-  if (write && (action || isMcpPath(pathname)) && (await isFromBannedAddress(request, env))) return tooManyRequests();
+  // change anything, sign in or join. The MCP server reads over POST, so only its one writing tool is
+  // theirs to lose, which refuses a banned address as the room's access says (src/mcp-server.ts).
+  if (write && action && (await isFromBannedAddress(request, env))) return tooManyRequests();
   // Then: a browser too old for the app has nothing to sign in to.
   if (isFromUnsupportedBrowser(request)) return unsupportedBrowserPage(request, env);
   // The Slack-compatible Web API's methods are refused as its envelope says, for a token only its bot
