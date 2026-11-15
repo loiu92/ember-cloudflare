@@ -69,6 +69,7 @@ import ownAppSignIns from "../migrations/0068_own_app_sign_ins.sql";
 import guests from "../migrations/0069_guests.sql";
 import commands from "../migrations/0070_commands.sql";
 import apiTokens from "../migrations/0071_tokens.sql";
+import reminderPushes from "../migrations/0072_reminder_pushes.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -164,6 +165,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0069_guests.sql", scope: "workspace", sql: guests },
   { name: "0070_commands.sql", scope: "workspace", sql: commands },
   { name: "0071_tokens.sql", scope: "workspace", sql: apiTokens },
+  { name: "0072_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
 ];
 
 /**
