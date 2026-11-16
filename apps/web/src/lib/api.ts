@@ -37,8 +37,12 @@ import {
   type EmailLinkSignUp,
   type EmailSettings,
   type Favorites,
+<<<<<<< HEAD
   type GroupId,
   type GuestAnswer,
+=======
+  type HuddleRelaySetup,
+>>>>>>> ember/v0.5.0-beta.5
   type HuddlesForgotten,
   type HuddlesSaved,
   type HuddlesSettings,
@@ -109,8 +113,12 @@ import {
   type YourAssistantChanged,
   type YourAssistantChanges,
 } from "@ember/protocol";
+<<<<<<< HEAD
 import type { Command, CommandAnswer, Commands, NewCommand, NewShortcut, Shortcut, ShortcutAnswer, Shortcuts } from "@ember/protocol/bots";
 import type { Agent, AgentAnswer, AgentChanges, Agents, AgentSettings, AgentTrial, AgentTrialAnswer, NewAgent } from "@ember/protocol/agents";
+=======
+import type { Agent, AgentAnswer, AgentChanges, Agents, AgentSettings, AgentTrial, AgentTrialAnswer, AvailableAgent, AvailableAgents, NewAgent } from "@ember/protocol/agents";
+>>>>>>> ember/v0.5.0-beta.5
 import type {
   AgentToolPicks,
   AgentTools,
@@ -717,6 +725,24 @@ export async function forgetHuddles(): Promise<null> {
 }
 
 /**
+ * Gives Ember a TURN key's ID and API token for huddles' relay to go by, answering huddles as they are
+ * then. Fails with a 422 ApiError on the field Ember or Cloudflare refuses, a 502 one when Ember couldn't
+ * ask Cloudflare, a 409 one while huddles are off, and a 403 one for anyone but an administrator.
+ */
+export async function saveHuddleRelay(setup: HuddleRelaySetup): Promise<HuddlesSettings> {
+  return (await request<HuddlesSaved>("/api/account/huddles/relay", { method: "PUT", body: JSON.stringify(setup) })).huddles;
+}
+
+/**
+ * Takes huddles' relay away, forgetting the TURN key Ember was given, answering huddles as they are
+ * then, which is null where they've been turned off since. Fails with a 403 ApiError for anyone but an
+ * administrator.
+ */
+export async function forgetHuddleRelay(): Promise<HuddlesSettings | null> {
+  return (await request<HuddlesSaved | HuddlesForgotten>("/api/account/huddles/relay", { method: "DELETE" })).huddles;
+}
+
+/**
  * The models Ember offers, as Set up Ember AI, Add a model and the agents' pages list them: those the
  * models file lists, then Workers AI's, as Cloudflare's model search lists them for the account `keys`
  * names, with its API token, as Set up Ember AI has them typed, or else Ember AI's, or why they aren't
@@ -799,6 +825,11 @@ export async function changeWebSearch(on: boolean): Promise<WebSearchChanged> {
 /** The agents, by name. Fails with a 409 ApiError while Ember AI is off, and a 403 one for anyone but an administrator. */
 export async function fetchAgents(): Promise<Agent[]> {
   return (await request<Agents>("/api/account/agents")).agents;
+}
+
+/** The AI agents this person can ask, @ember first, then by name, with what each does and the rooms it shares with them: none while Ember AI is off. */
+export async function fetchAvailableAgents(): Promise<AvailableAgent[]> {
+  return (await request<AvailableAgents>("/api/agents")).agents;
 }
 
 /** Agent `agentId`, as its page shows it. Fails as `fetchAgents` does, and with a 404 ApiError for an id that isn't an agent's. */
@@ -1041,6 +1072,7 @@ export async function dismissInvitation(): Promise<void> {
   await request("/api/sidebar/invitation", { method: "DELETE" });
 }
 
+<<<<<<< HEAD
 /** The reminders of theirs the person hasn't dismissed yet, the one coming soonest first. */
 export async function fetchReminders(): Promise<Reminder[]> {
   const { reminders } = await request<{ reminders: Reminder[] }>("/api/reminders");
@@ -1062,6 +1094,11 @@ export async function setReminder(roomId: RoomId, messageId: string, remindAt: s
 /** Dismisses a reminder of theirs, which is being done with it, or taking it back before it comes. */
 export async function dismissReminder(id: string): Promise<void> {
   await request(`/api/reminders/${encodeURIComponent(id)}`, { method: "DELETE" });
+=======
+/** Stops an invitation into room `roomId`'s huddle ringing in every tab this person has open, as joining from it or declining it does. */
+export async function answerHuddleInvitation(roomId: RoomId): Promise<void> {
+  await request(`/api/rooms/${encodeURIComponent(roomId)}/huddle/invitation`, { method: "DELETE" });
+>>>>>>> ember/v0.5.0-beta.5
 }
 
 /** A copy of the people directory, and the ETag the server sent it with. */

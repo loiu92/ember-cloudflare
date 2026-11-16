@@ -43,7 +43,7 @@ import { CustomDomainSettings } from "./custom-domain-settings";
 import { EmberVersion } from "./ember-version";
 import { EmailSettings, sendsEmail } from "./email-settings";
 import { EmailSetup } from "./email-setup";
-import { HuddlesSettings } from "./huddles-settings";
+import { HuddleRelay, HuddlesSettings, HuddleSwitches } from "./huddles-settings";
 import { HuddlesSetup } from "./huddles-setup";
 import { InviteByEmail } from "./invite-by-email";
 import { InviteLink } from "./invite-link";
@@ -51,7 +51,11 @@ import { MemberfulSetup } from "./memberful-setup";
 import { OutsideAiSettings } from "./outside-ai-settings";
 import { PeopleList } from "./people-list";
 import { PicturePicker } from "./picture-picker";
+<<<<<<< HEAD
 import { ProfileFieldsSettings } from "./profile-fields-settings";
+=======
+import { RelaySetup } from "./relay-setup";
+>>>>>>> ember/v0.5.0-beta.5
 import { RoomOrder } from "./room-order";
 import { workspaceSectionOf } from "./settings-navigation";
 import { CHANGES_SAVED, PageHeading, Panel, SECTION_HEADING, SettingsPage, TITLE, TITLE_LINK } from "./settings-page";
@@ -119,7 +123,8 @@ interface Props {
  *   its page, and New agent. Then whether AI apps, such as Claude, may connect to Ember as the people in
  *   it (Outside AI).
  * - Huddles: for administrators, whether huddles are on, through the Realtime SFU app whose keys Set up
- *   huddles takes.
+ *   huddles takes, and while they are, whether people may turn their cameras on in them and share their
+ *   screens, and whether huddles have a relay, by the TURN key Set up the relay takes.
  */
 export function WorkspaceSettingsPage({
   me,
@@ -158,6 +163,7 @@ export function WorkspaceSettingsPage({
   const [memberfulSetup, setMemberfulSetup] = useState<{ then?: () => void } | null>(null);
   const [settingUpAssistant, setSettingUpAssistant] = useState(false);
   const [settingUpHuddles, setSettingUpHuddles] = useState(false);
+  const [settingUpRelay, setSettingUpRelay] = useState(false);
   const account = useAccount();
   const name = typedName ?? account.name;
   const tagline = typedTagline ?? account.tagline;
@@ -668,6 +674,17 @@ export function WorkspaceSettingsPage({
           (settings.canAdminister ? (
             <>
               <HuddlesSettings huddles={settings.huddles} onSetUp={() => setSettingUpHuddles(true)} onStopped={() => showHuddles(null)} onFailed={onFailed} />
+              {settings.huddles !== null && <HuddleSwitches saveSwitch={saveSwitch} />}
+              {settings.huddles !== null && <HuddleRelay relayKeyId={settings.huddles.relayKeyId} onSetUp={() => setSettingUpRelay(true)} onStopped={showHuddles} onFailed={onFailed} />}
+              {settingUpRelay && settings.huddles !== null && (
+                <RelaySetup
+                  relayKeyId={settings.huddles.relayKeyId}
+                  deployedAccountId={settings.cloudflareAccountId}
+                  onSaved={showHuddles}
+                  onClose={() => setSettingUpRelay(false)}
+                  onFailed={onFailed}
+                />
+              )}
               {settingUpHuddles && (
                 <HuddlesSetup
                   huddles={settings.huddles}

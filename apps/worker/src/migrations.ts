@@ -60,6 +60,7 @@ import appSignInClients from "../migrations/0059_app_sign_in_clients.sql";
 import appScopeWanted from "../migrations/0060_app_scope_wanted.sql";
 import ownAppSignIns from "../migrations/0061_own_app_sign_ins.sql";
 import outsideAi from "../migrations/0062_outside_ai.sql";
+<<<<<<< HEAD
 import pins from "../migrations/0063_pins.sql";
 import userGroups from "../migrations/0064_user_groups.sql";
 import dnd from "../migrations/0065_dnd.sql";
@@ -73,6 +74,9 @@ import commands from "../migrations/0072_commands.sql";
 import apiTokens from "../migrations/0073_tokens.sql";
 import reminderPushes from "../migrations/0074_reminder_pushes.sql";
 import shortcuts from "../migrations/0075_shortcuts.sql";
+=======
+import agentAccess from "../migrations/0063_agent_access.sql";
+>>>>>>> ember/v0.5.0-beta.5
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -159,6 +163,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0060_app_scope_wanted.sql", scope: "workspace", sql: appScopeWanted },
   { name: "0061_own_app_sign_ins.sql", scope: "workspace", sql: ownAppSignIns },
   { name: "0062_outside_ai.sql", scope: "workspace", sql: outsideAi },
+<<<<<<< HEAD
   { name: "0063_pins.sql", scope: "room", sql: pins },
   { name: "0064_user_groups.sql", scope: "workspace", sql: userGroups },
   { name: "0065_dnd.sql", scope: "workspace", sql: dnd },
@@ -172,6 +177,9 @@ export const MIGRATIONS: Migration[] = [
   { name: "0073_tokens.sql", scope: "workspace", sql: apiTokens },
   { name: "0074_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
   { name: "0075_shortcuts.sql", scope: "workspace", sql: shortcuts },
+=======
+  { name: "0063_agent_access.sql", scope: "workspace", sql: agentAccess },
+>>>>>>> ember/v0.5.0-beta.5
 ];
 
 /**

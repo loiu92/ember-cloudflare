@@ -1,5 +1,5 @@
 import { useContext, useEffect, useEffectEvent, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent, type MouseEvent } from "react";
-import type { DirectoryUser, UserId } from "@ember/protocol";
+import type { DirectoryUser, Me, UserId } from "@ember/protocol";
 import { Search, Xmark } from "@/components/icons/iconoir";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { PeopleContext, useNameOf } from "@/hooks/use-directory";
@@ -35,6 +35,15 @@ export function opensNewDirect(open: (opener: HTMLElement) => void) {
   };
 }
 
+const namesOf = new Intl.ListFormat("en-US", { type: "conjunction" });
+
+/**
+ * What an administrator is told once a DM starts without the AI agents picked for it that are only
+ * available in admin DMs, by their `names`: a DM with anyone who isn't an administrator leaves them out.
+ */
+export const startedWithout = (names: string[]) =>
+  `${namesOf.format(names)} ${names.length === 1 ? "is" : "are"} only for DMs between administrators, so this DM is without ${names.length === 1 ? "it" : "them"}.`;
+
 /**
  * Puts focus back on what opened a dialog, or, when that's gone with the drawer it was in, on the
  * drawer's toggle.
@@ -48,7 +57,8 @@ export function returnFocus(opener: HTMLElement | null) {
 interface Props {
   /** The link that opened it, or null when the page's address did. */
   opener: HTMLElement | null;
-  meId: UserId;
+  /** Who's looking, who isn't listed, nor the AI agents only administrators can ask unless they're one. */
+  me: Me;
   /** Loads the people directory again, settling once it has or failed, as opening the dialog does. */
   reloadPeople: () => Promise<void>;
   /** Called as a DM starts, with what lists it, for the sidebar, as the server answers. */
@@ -58,6 +68,8 @@ interface Props {
    * it is, so its composer has yet to take focus.
    */
   onClose: (startedShown: boolean) => void;
+  /** Hears of the people picked whom the DM started without, which it does without an AI agent only available in admin DMs. */
+  onLeftOut: (people: DirectoryUser[]) => void;
   /** Hears that the session has ended, when that's why a DM didn't start. */
   onFailed: (error: unknown) => void;
 }
@@ -69,7 +81,7 @@ interface Props {
  * have one, and goes there. It's open from when it's shown until it closes, which it can't while a DM
  * is starting.
  */
-export function NewDirectDialog({ opener, meId, reloadPeople, askForRoom, onClose, onFailed }: Props) {
+export function NewDirectDialog({ opener, me, reloadPeople, askForRoom, onClose, onLeftOut, onFailed }: Props) {
   const people = useContext(PeopleContext);
   const nameOf = useNameOf();
   const isAgent = useIsAgent();
@@ -92,7 +104,11 @@ export function NewDirectDialog({ opener, meId, reloadPeople, askForRoom, onClos
   const started = useRef<"opened" | "shown" | null>(null);
 
   const name = soughtName(typed);
+<<<<<<< HEAD
   const matches = useMemo(() => peopleMatching(people.values(), name), [people, name]);
+=======
+  const matches = useMemo(() => peopleMatching(people.values(), me, name), [people, me, name]);
+>>>>>>> ember/v0.5.0-beta.5
   const shown = matches.slice(0, pages * PEOPLE_PAGE);
   const options = shown.filter((person) => !picked.some((p) => p.id === person.id));
   // The directory lists everyone, you included, once it's loaded.
@@ -181,6 +197,8 @@ export function NewDirectDialog({ opener, meId, reloadPeople, askForRoom, onClos
       const room = await startDirect(picked.map((person) => person.id));
       answered({ type: "saved", room });
       if (!mounted.current) return false;
+      const leftOut = picked.filter((person) => !room.members.some((member) => member.id === person.id));
+      if (leftOut.length > 0) onLeftOut(leftOut);
       started.current = route.page === "room" && route.roomId === room.id ? "shown" : "opened";
       setOpen(false);
       navigate(roomPath(room.id));

@@ -80,7 +80,7 @@ export type {
   YourAssistantChanges,
 } from "./assistant.ts";
 // And the rest of huddles.ts, from "@ember/protocol/huddles", which only the Huddles card, its setup and the Worker's huddles use.
-export type { HuddlesField, HuddlesForgotten, HuddlesSaved, HuddlesSettings, HuddlesSetup, LiveHuddle } from "./huddles.ts";
+export type { HuddleRelayField, HuddleRelaySetup, HuddlesField, HuddlesForgotten, HuddlesSaved, HuddlesSettings, HuddlesSetup, LiveHuddle } from "./huddles.ts";
 export {
   FILE_NAME_NOT_KEPT,
   FILE_TOO_LARGE,
@@ -246,9 +246,22 @@ export interface DirectoryUser extends User {
    * once it's deleted, as its answers stay. Left out for anyone else.
    */
   agent?: true;
+  /**
+   * Whether they're an AI agent only administrators can ask, as Admin access on its page sets it, which
+   * nobody else is offered to mention or to write to. Left out for anyone else. One only administrators'
+   * direct messages reach is listed to administrators alone.
+   */
+  adminsOnly?: true;
 }
 
+<<<<<<< HEAD
 /** What `GET /api/users` answers: everyone in the workspace, deactivated, banned and suspended people too, and the workspace's groups. */
+=======
+/**
+ * What `GET /api/users` answers: everyone in the workspace, deactivated, banned and suspended people too,
+ * but, for anyone who isn't an administrator, the AI agents only administrators' direct messages reach.
+ */
+>>>>>>> ember/v0.5.0-beta.5
 export interface Directory {
   users: DirectoryUser[];
   groups: UserGroup[];
@@ -403,8 +416,8 @@ export interface Favorites {
 /**
  * What `GET /api/sidebar` answers: the rooms someone is in, in the order they were made, the ones
  * they've starred, the invitation, when they're an administrator in its room who hasn't dismissed the
- * card, the people suggested for DMs, and the huddles going on in their rooms. It comes with an ETag,
- * and a request whose If-None-Match names it gets 304 Not Modified instead.
+ * card, and the huddles going on in their rooms. It comes with an ETag, and a request whose
+ * If-None-Match names it gets 304 Not Modified instead.
  */
 export interface Sidebar {
   rooms: SidebarRoom[];
@@ -416,24 +429,9 @@ export interface Sidebar {
    */
   sharedOrder: RoomId[];
   invitation: Invitation | null;
-  /**
-   * People to start a DM with: the active people with the oldest accounts who share no DM with this
-   * person, never them nor a bot or AI agent, as many as `suggestedCount` says.
-   */
-  suggestions: User[];
   /** The huddle going on in each of `rooms` that has one, by the room's id. `room.huddle` frames keep it current. */
   huddles: Record<RoomId, LiveHuddle>;
 }
-
-/** How many people the sidebar's suggestions start from, Campfire's `DIRECT_PLACEHOLDERS`. */
-export const SUGGESTED_PEOPLE = 20;
-
-/**
- * How many people the sidebar suggests for DMs to someone with `peopleInDirects` people across their
- * DMs, them included: `SUGGESTED_PEOPLE` less those people, less one more, so 19 with no DMs, 18 with
- * only a DM with themselves and 17 with a DM with one other person.
- */
-export const suggestedCount = (peopleInDirects: number) => Math.max(0, SUGGESTED_PEOPLE - peopleInDirects - 1);
 
 /**
  * A room to create: an open room takes in everyone, and a closed one only the people `memberIds` names.
@@ -467,7 +465,7 @@ export interface GuestAnswer {
   guest: RoomGuest;
 }
 
-/** What `GET /api/rooms/new` answers for the New room forms: everyone active, by name. */
+/** What `GET /api/rooms/new` answers for the New room forms: everyone active who can be put in a room, by name (`RoomSettings.people`). */
 export interface NewRoomForm {
   people: User[];
 }
@@ -490,7 +488,7 @@ export interface RoomSettings {
   room: SharedRoom;
   /** Whether you can change the room, as administrators and its creator can. Others see it read-only. */
   canAdminister: boolean;
-  /** Everyone active, by name. */
+  /** Everyone active who can be put in a room, by name: all but the AI agents only administrators' direct messages reach. */
   people: RoomPerson[];
 }
 
@@ -638,6 +636,16 @@ export interface Account {
    * does, when no room's header has a huddle button.
    */
   huddles: boolean;
+  /**
+   * Whether people may turn their camera on in a huddle, as the Huddles tab's Cameras switch says. On
+   * until an administrator turns it off, which keeps huddles to voices.
+   */
+  huddleCameras: boolean;
+  /**
+   * Whether people may share their screen in a huddle, as the Huddles tab's Screen sharing switch says.
+   * On until an administrator turns it off.
+   */
+  huddleScreens: boolean;
 }
 
 /** What `GET /api/account` answers for workspace settings. */
@@ -904,6 +912,8 @@ export interface AccountChanges {
 export interface AccountSettings {
   hideTranslationButtons?: boolean;
   restrictRoomCreation?: boolean;
+  huddleCameras?: boolean;
+  huddleScreens?: boolean;
   joinLink?: boolean;
   openSignUp?: boolean;
   memberfulJoin?: boolean;
@@ -2014,9 +2024,15 @@ export type WorkspaceServerFrame =
   | { type: "room.read"; roomId: RoomId }
   /**
    * Someone changed, as the people directory now lists them: they changed their profile, or an
-   * administrator gave them another role, removed them, banned them or lifted their ban. Sent to everyone.
+   * administrator gave them another role, removed them, banned them or lifted their ban. Sent to everyone,
+   * but of an AI agent only administrators' direct messages reach, which only administrators hear.
    */
   | { type: "user.updated"; user: DirectoryUser }
+  /**
+   * An AI agent the people directory no longer lists to them, as an administrator has kept it to
+   * administrators' direct messages. Sent to everyone but administrators.
+   */
+  | { type: "user.gone"; userId: UserId }
   /**
    * A room of theirs as it is now, sent to everyone in it when it's made, renamed, given another icon,
    * opened to everyone or made private, and to whoever a change puts in it, and to everyone in a DM
@@ -2035,6 +2051,15 @@ export type WorkspaceServerFrame =
    * the huddle or not, as people join it and leave, and to whoever a change puts in a room with one going on.
    */
   | { type: "room.huddle"; roomId: RoomId; huddle: LiveHuddle | null }
+  /**
+   * Someone in the huddle of a room of theirs, `by`, invites them into it, which rings in every tab they
+   * have open, for them to join from or decline, until they answer it in one, the huddle is over, or
+   * half a minute has passed. Sent only to the people invited, each of whom is in the room and hears
+   * its @mentions of them or more.
+   */
+  | { type: "huddle.invited"; roomId: RoomId; by: UserId }
+  /** They've answered an invitation into a room's huddle, joining from it or declining it, in this tab or another, so it rings in none of them from now on. */
+  | { type: "huddle.answered"; roomId: RoomId }
   /** They've starred or unstarred a room, in this tab or another: their stars as they are now. */
   | { type: "favorites.changed"; favorites: Favorites }
   /**
@@ -2494,6 +2519,8 @@ function aTime(v: unknown): string | null {
 const SETTING_NAMES: Record<keyof AccountSettings, string> = {
   hideTranslationButtons: "Hide translation buttons",
   restrictRoomCreation: "Must be admin to create new rooms",
+  huddleCameras: "Cameras",
+  huddleScreens: "Screen sharing",
   joinLink: "Join link",
   openSignUp: "Open",
   memberfulJoin: "Memberful",
