@@ -439,6 +439,45 @@ describe("One room, and nothing else", () => {
     expect(bootstrap.account.joinCode ?? null).toBeNull();
   });
 
+  it("reads the profiles of their room's people alone, and hears 404 for anyone else's", async () => {
+    const member = await signIn("Grace");
+    expect((await api(`/api/users/${host.user.id}`, { headers: { Cookie: guest.cookie } })).status).toBe(200);
+    expect((await api(`/api/users/${guest.user.id}`, { headers: { Cookie: guest.cookie } })).status).toBe(200);
+
+    // Grace is in no room of theirs, though active in the workspace, so their page is none of theirs to read.
+    expect((await api(`/api/users/${member.user.id}`, { headers: { Cookie: guest.cookie } })).status).toBe(404);
+    // Nor once the answer would say nothing of anyone, as a stranger's would.
+    expect((await api("/api/users/nowhere", { headers: { Cookie: guest.cookie } })).status).toBe(404);
+  });
+
+  it("marks a guest their room has dropped as out of its settings' chosen, whose saving brings nobody back", async () => {
+    const tab = await openWorkspaceSocket(guest);
+
+    // Taking them out of their room ends their way in, and their stay keeps its row still.
+    const out = await api(`/api/rooms/${room}`, { method: "PATCH", headers: { Cookie: host.cookie }, body: JSON.stringify({ kind: "closed", memberIds: [host.user.id] }) });
+    expect(out.status, await out.clone().text()).toBe(200);
+    expect(await tab.next()).toMatchObject({ type: "room.gone", roomId: room });
+    expect(await opened(room, guest)).toBe(CloseCode.NotFound);
+
+    // The settings' people list marks them as out, with their stay named apart, so the form's chosen
+    // has none of them, whoever reopens it.
+    const settings = (await (await settingsOf(host, room)).json()) as RoomSettings;
+    const pat = settings.people.find((person) => person.id === guest.user.id)!;
+    expect(pat.member).toBe(false);
+    expect(pat.guestUntil).toBeTypeOf("string");
+
+    // Saving an unrelated change, which the page sends with the people it marks as in, puts nobody
+    // back: their membership is still gone, and their room's socket refuses them.
+    const renamed = await api(`/api/rooms/${room}`, {
+      method: "PATCH",
+      headers: { Cookie: host.cookie },
+      body: JSON.stringify({ kind: "closed", name: "Design", memberIds: [host.user.id] }),
+    });
+    expect(renamed.status, await renamed.clone().text()).toBe(200);
+    expect((await workspaceSql("SELECT room_id FROM memberships WHERE user_id = ?", guest.user.id)) as Array<unknown>).toEqual([]);
+    expect(await opened(room, guest)).toBe(CloseCode.NotFound);
+  });
+
 });
 
 describe("Expiry", () => {

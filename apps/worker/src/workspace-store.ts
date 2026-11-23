@@ -1,3 +1,4 @@
+
 import {
   ASSISTANT_ID,
   ASSISTANT_NAME,
@@ -1250,19 +1251,19 @@ const DISCONNECT_IDENTITY = `DELETE FROM identities WHERE user_id = ?1 AND issue
 
 /**
  * The same, for someone signing in with a sign-in link, unless they're no longer active, or are a guest
- * while ?7 says guests can't stay signed in and no stay of a guest of one room still holds them at ?9,
- * or the session ?8 names, which showed the link, has ended, is a guest's while ?7 says that and no
- * such stay holds its person either, or is neither theirs nor an active administrator's.
- * while ?7 says guests can't stay signed in, or the session ?8 names, which showed the link at ?9, has
- * ended, has ended the links it showed until after then (`EndedByPassword`), is a guest's while ?7 says
- * that, or is neither theirs nor an active administrator's.
+ * whose stay has passed, whatever the flag says, or a guest of no stay while ?7 says guests can't stay
+ * signed in, or the session ?8 names, which showed the link at ?9, has ended, has ended the links it
+ * showed until after then (`EndedByPassword`), is a guest's under the same test, or is neither theirs
+ * nor an active administrator's.
  */
 const INSERT_TRANSFERRED_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at)
   SELECT ?1, id, ?2, ?3, ?4, ?5, ?5, ?5 FROM users WHERE id = ?6 AND status = ${ACTIVE}
-    AND (guest = 0 OR ?7 = 1 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at > ?10))
+    AND (guest = 0 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at > ?10)
+      OR (?7 = 1 AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)))
     AND EXISTS (SELECT 1 FROM sessions AS showing JOIN users AS shower ON shower.id = showing.user_id
       WHERE showing.id = ?8 AND showing.transfers_since <= ?9 AND shower.status = ${ACTIVE}
-        AND (shower.guest = 0 OR ?7 = 1 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = shower.id AND guest_stays.until_at > ?10))
+        AND (shower.guest = 0 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = shower.id AND guest_stays.until_at > ?10)
+          OR (?7 = 1 AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = shower.id)))
         AND (shower.id = users.id OR shower.role = ${ADMINISTRATOR}))`;
 
 /**
@@ -2155,6 +2156,7 @@ export const SUGGESTED_FOR_USER = `SELECT id, name FROM users
     AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)
   ORDER BY created_at, id LIMIT ${SUGGESTED_PEOPLE - 1}`;
 
+
 /**
  * Starts the DMs ?1 lists, each `{ id, key, userId }` for one between newcomer ?2 and someone here
  * who's still active, as of ?3, welcoming ?2, unless those two have one already, answering the ones it
@@ -2374,6 +2376,7 @@ const TOLD_OF_DIRECT_MESSAGE = `SELECT user_id FROM memberships
  * names, who are viewing it, or its thread for a reply sent only there, at all messages, when it's in the
  * room's timeline, as ?7 says, then
  * of those at @mentions or all messages whom it mentions, a JSON list ?4, or who follow the thread it's a
+
  * reply in, a JSON list ?8, each in the order they were saved, but none of whoever has hushed their push
  * notifications (Do not disturb) while a row in `dnd` covers the moment, ?9 being it and the instant the
  * guests' stays are read against: guests of one room, whom guest_stays keeps, are pushed whatever ?6
@@ -2400,6 +2403,7 @@ export const MESSAGE_PUSHES = `SELECT push_subscriptions.id, push_subscriptions.
 
 /**
  * Whether push subscription ?1 may still have a push at the moment ?2 is: still saved, for someone
+
  * active who hasn't hushed their push notifications (Do not disturb), and, should they be a guest of
  * one room, while their stay hasn't ended yet, so a push holding the message's text waits for nobody
  * whose reads refuse. Its id is never another's, as AUTOINCREMENT numbers them.
@@ -3469,6 +3473,7 @@ const ROOM_TO_DELETE = `SELECT rooms.kind, ${CAN_ADMINISTER}
 
 /**
  * Puts someone new in every open room, unless a stay of a guest of one room holds them, whose rooms
+
  * their stay bounds: unbanning or letting back a suspended guest puts them in none.
  */
 const GRANT_OPEN_ROOMS_TO_USER = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
@@ -3511,6 +3516,7 @@ const OPEN_ROOM_NAMED = `SELECT id, kind, name, icon FROM rooms WHERE kind = 'op
 
 /**
  * Puts the people a JSON list names in a room, whatever their status, and answers whom it put in — but
+
  * none whom the stay of a guest of another room holds, whose rooms it bounds, whoever picks them, and
  * none of them an AI agent only administrators' direct messages reach, which is in no room. A guest of
  * the room itself goes back in: their stay outlives their membership, which its settings taking them
@@ -4098,6 +4104,7 @@ export class WorkspaceStore {
       // batch keeps: an INSERT_SESSION ahead of it would put the same id in twice, and sessions.id
       // being a primary key, roll the whole join back.
       statement(INSERT_IDENTITY_SESSION, sessionId, person.id, tokenDigest, client.ip, client.userAgent, now, account.issuer, kept.sid),
+
       statement(SPEND_EMAIL_LINKS, person.emailAddress),
       ...welcoming(person.id, welcomes, now),
     ]);
@@ -4580,12 +4587,14 @@ export class WorkspaceStore {
   }
 
   /**
+
    * The guests of one room who may still sign in by their stay's name: those active whose stays haven't
    * ended yet, with their names, for matching the name the sign-in form gives (`sameName` compares those).
    */
   async unexpiredGuestStays(now: number): Promise<Array<{ userId: UserId; name: string }>> {
     return this.db.all(
       `SELECT guest_stays.user_id AS userId, users.name FROM guest_stays JOIN users ON users.id = guest_stays.user_id
+
        WHERE guest_stays.until_at > ? AND users.status = ${ACTIVE}`,
       now,
     );
@@ -4719,8 +4728,10 @@ export class WorkspaceStore {
    * an active administrator's.
    * Starts a session for someone who opened a sign-in link for them that the session `shownBy` showed
    * at `shownAt`, unless they're no longer active, or are a guest while `guests` says guests can't stay
-   * signed in, or that session has ended, has ended the links it showed until then, or is neither theirs
-   * nor an active administrator's.
+   * signed in and no stay of a guest of one room still holds them now, or that session has ended, has
+   * ended the links it showed until then, or is neither theirs nor an active administrator's. A stay is
+   * checked against the current time, not when the link was shown, so a stay that ended before the link
+   * was opened doesn't replace a valid session with one the next request rejects.
    */
   async startTransferredSession(
     userId: UserId,
@@ -5112,12 +5123,14 @@ export class WorkspaceStore {
   }
 
   /**
+
    * When the outbox's next revocation, purge, reindex, picture deletion, membership check, refresh,
    * reminder or guest stay is due, if any is waiting, leaving out the purges waiting on their rooms'
    * revocations, which are due no sooner.
    */
 
   async nextDeliveryDue(): Promise<number | null> {
+
     const [row] = await this.db.all<{ revocation: number | null; purge: number | null; reindex: number | null; picture: number | null; membership: number | null; catchUp: number | null; refresh: number | null; reminder: number | null; stay: number | null }>(
       `SELECT (SELECT min(due_at) FROM pending_revocations) AS revocation, (${NEXT_PURGE_DUE}) AS purge, (SELECT min(due_at) FROM pending_reindexes) AS reindex,
         (SELECT min(due_at) FROM pending_picture_deletions) AS picture, (SELECT min(due_at) FROM membership_checks) AS membership,
@@ -5435,6 +5448,13 @@ export class WorkspaceStore {
    * reader's mark. The latest message also records when the room was last active. A reply sent only to
    * its thread does neither, and isn't pushed to those its event's `viewerIds` say are viewing the thread,
    * in place of those viewing the room. Those the Workspace has applied before change nothing. Answers
+   * whose marks changed, and whether each is now unread, and, when a message has come in a DM, when the
+   * latest did and everyone in the DM, to tell. With `pushing`, it answers each new message's pushes too,
+   * found just after its marks, so that a push's badge counts them and none of the events after it, and
+   * to guests only if `guests` says they can stay signed in. It answers the bots' webhooks each new
+   * message is delivered to, but for a bot's reply to one, which reaches the room as any message does but
+   * goes to no webhook. `now` is the moment the pushes are chosen at, which a guest's stay must outlast
+   * for their push to be among them, so that a stay passed since answers as it will when the push is sent.
    * whose marks changed, in a DM whose counts did, and how each is marked now, and, when a message has
    * come in a DM, when the latest did and everyone in the DM, to tell. With `pushing`, it answers each
    * new message's pushes too, found just after its marks, so that a push's badge counts them and none of
@@ -5442,7 +5462,7 @@ export class WorkspaceStore {
    * bots' webhooks each new message is delivered to, but for a bot's reply to one, which reaches the room
    * as any message does but goes to no webhook.
    */
-  async applyRoomEvents(roomId: RoomId, events: RoomEvent[], viewerIds: UserId[], pushing = false, guests = false): Promise<AppliedEvents> {
+  async applyRoomEvents(roomId: RoomId, events: RoomEvent[], viewerIds: UserId[], pushing = false, guests = false, now = Date.now()): Promise<AppliedEvents> {
     const viewers = JSON.stringify(viewerIds);
     const last = events.at(-1)!.seq;
     const message = events.findLast(isRoomMessage);
@@ -5457,6 +5477,7 @@ export class WorkspaceStore {
       const mentions = event.message ? JSON.stringify(event.message.mentionIds) : null;
       const followers = JSON.stringify(event.message?.followerIds ?? []);
       const inRoom = event.threadOnly ? 0 : 1;
+
       const pushes = pushing && mentions !== null ? statements.push(statement(MESSAGE_PUSHES, roomId, userId, seeing, mentions, seq, guests ? 1 : 0, inRoom, followers, Date.now())) - 1 : null;
       // A bot's reply is never delivered to webhooks, as Campfire posts one without delivering it, nor is
       // @ember's answer, which is a reply too.
@@ -5480,6 +5501,7 @@ export class WorkspaceStore {
     const asks = deliveries.flatMap(({ answers, ...ask }) => (answers ? [ask] : []));
     return { marks, active: toldIds.length > 0 ? { at: messageAt!, userIds: toldIds } : null, pushes, webhooks, asks };
   }
+
 
   /** Whether push subscription `id` may still have a push: still saved, for someone active with no hush covering the moment, and, should they be a guest, no stay that's ended. */
   async pushable(id: number, now: number): Promise<boolean> {
@@ -6623,6 +6645,7 @@ export class WorkspaceStore {
     return row
       ? {
           ...roomToChange(row),
+
           people: people.map((person) => {
             const until = untilOf.get(person.id);
             return until === undefined ? { ...person, member: person.member === 1 } : { ...person, member: true, guestUntil: new Date(until).toISOString() };

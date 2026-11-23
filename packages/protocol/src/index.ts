@@ -413,9 +413,9 @@ export interface Blocks {
 /**
  * What `GET /api/sidebar` answers: the rooms someone is in, in the order they were made, the ones
  * they've starred, the invitation, when they're an administrator in its room who hasn't dismissed the
- * card, the huddles going on in their rooms, the people they've blocked, and which of a huddle's sounds
- * they hear, once they've turned one off. It comes with an ETag, and a request whose If-None-Match names
- * it gets 304 Not Modified instead.
+ * card, the people suggested for DMs, the huddles going on in their rooms, the people they've blocked,
+ * and which of a huddle's sounds they hear, once they've turned one off. It comes with an ETag, and a
+ * request whose If-None-Match names it gets 304 Not Modified instead.
  */
 export interface Sidebar {
   rooms: SidebarRoom[];

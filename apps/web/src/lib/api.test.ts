@@ -143,9 +143,9 @@ describe("Live sidebar updates", () => {
     favorites: { rooms: [], version: 0 },
     sharedOrder: [],
     invitation: null,
+    suggestions: [],
     huddles: {},
     blocks: { userIds: [], version: 0 },
-    suggestions: [],
   };
 
   it("keeps the sidebar's ETag, and names it to keep the copy while it's current", async () => {
