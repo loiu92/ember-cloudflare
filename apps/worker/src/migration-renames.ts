@@ -36,9 +36,11 @@ export const MIGRATION_RENAMES: readonly (readonly [was: string, now: string])[]
   ["0081_reminder_push_retries.sql", "0085_reminder_push_retries.sql"],
   ["0082_reminder_pushes.sql", "0090_reminder_pushes.sql"],
   ["0080_saves.sql", "0087_saves.sql"],
+  ["0066_tokens.sql", "0092_tokens.sql"],
+  ["0080_tokens.sql", "0092_tokens.sql"],
   ["0063_usernames.sql", "0072_usernames.sql"],
   ["0071_reports.sql", "0073_reports.sql"],
   ["0073_bot_rooms.sql", "0077_bot_rooms.sql"],
   ["0077_cleared_reports.sql", "0078_cleared_reports.sql"],
-  ["0066_tokens.sql", "0073_tokens.sql"],
+  ["0066_tokens.sql", "0092_tokens.sql"],
 ];

@@ -90,6 +90,7 @@ import sessionAddresses from "../migrations/0076_session_addresses.sql";
 import botRooms from "../migrations/0077_bot_rooms.sql";
 import clearedReports from "../migrations/0078_cleared_reports.sql";
 import sso from "../migrations/0079_sso.sql";
+import apiTokens from "../migrations/0092_tokens.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
@@ -206,6 +207,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0089_commands.sql", scope: "workspace", sql: commands },
   { name: "0090_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
   { name: "0091_shortcuts.sql", scope: "workspace", sql: shortcuts },
+  { name: "0092_tokens.sql", scope: "workspace", sql: apiTokens },
 ];
 
 /**

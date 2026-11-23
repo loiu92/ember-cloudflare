@@ -1,6 +1,6 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AVATAR_PATH, AVATAR_TOO_LARGE, CURRENT_PASSWORD_WRONG, MAX_AVATAR_SIZE, MEMBERFUL_CONNECTIONS_PATH, MEMBERFUL_DISCONNECTED_NOTICE, type Account, type DirectoryUser, type MemberfulDisconnection, type MemberfulStatus, type PersonMood, type Platform, type Profile, type ProfileAnswer, type ProfileChanges, type ProfileFieldEntry, type SidebarRoom } from "@ember/protocol";
+import { AVATAR_PATH, AVATAR_TOO_LARGE, CURRENT_PASSWORD_WRONG, MAX_AVATAR_SIZE, MEMBERFUL_CONNECTIONS_PATH, MEMBERFUL_DISCONNECTED_NOTICE, type Account, type ApiTokens, type DirectoryUser, type MemberfulDisconnection, type MemberfulStatus, type PersonMood, type Platform, type Profile, type ProfileAnswer, type ProfileChanges, type ProfileFieldEntry, type SidebarRoom } from "@ember/protocol";
 import { MODEL_NOT_LISTED, type YourAssistant, type YourAssistantChanged, type YourAssistantChanges } from "@ember/protocol/assistant";
 import { MEMBERFUL_WITH_SSO, SSO_CONNECTIONS_PATH, SSO_DISCONNECTED_NOTICE, SSO_WITH_MEMBERFUL, type SsoStatus } from "@ember/protocol/sso";
 import type { HuddleSounds, HuddleSoundsChanged } from "@ember/protocol/huddles";
@@ -82,6 +82,8 @@ function serve({
     switch (request) {
       case "GET /api/users/me/profile":
         return loaded();
+      case "GET /api/account/tokens":
+        return Response.json({ tokens: [] } satisfies ApiTokens);
       case "PATCH /api/users/me/profile": {
         const { password: _, currentPassword: _current, pushSubscriptionEndpoint: _endpoint, fieldValues, ...changes } = JSON.parse(String(init?.body)) as ProfileChanges;
         // What the server answers for the fields, with what the change saved for the ones it named.

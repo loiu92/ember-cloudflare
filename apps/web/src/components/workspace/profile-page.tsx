@@ -40,6 +40,7 @@ import { pushEndpoint } from "@/lib/push";
 import type { RoomAnswer } from "@/lib/room-list";
 import { cn } from "@/lib/utils";
 import { AnswerLevels } from "./answer-levels";
+import { ApiTokens } from "./api-tokens";
 import { BlockedPeople } from "./blocked-people";
 import { ConversationNotifications } from "./conversation-notifications";
 import { DoNotDisturb } from "./do-not-disturb";
@@ -599,6 +600,7 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
             onFailed={onFailed}
           />
         )}
+        <ApiTokens onFailed={onFailed} />
         {sso && (
           <SingleSignOnConnection
             name={sso.name}

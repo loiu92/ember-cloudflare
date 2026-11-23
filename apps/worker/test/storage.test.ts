@@ -17,6 +17,7 @@ const TABLES: Record<Exclude<Scope, "search">, string[]> = {
     "accounts",
     "agent_tools",
     "agents",
+    "api_tokens",
     "app_sign_ins",
     "apps",
     "bans",
@@ -148,11 +149,9 @@ describe("Durable Object SQLite or D1", () => {
     expect(columns).toContain("parent_id");
   });
 
-  it("renames only to migrations of today, or one whose tables no query keeps any more", () => {
+  it("renames only to migrations of today", () => {
     const names = new Set([...MIGRATIONS, ...SEARCH_MIGRATIONS].map(({ name }) => name));
     for (const [, now] of MIGRATION_RENAMES) {
-      // The personal access tokens that file made keep no queries: the apps sign in with their own.
-      if (now === "0073_tokens.sql") continue;
       expect(names.has(now), now).toBe(true);
     }
   });
