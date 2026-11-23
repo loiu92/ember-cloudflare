@@ -4999,6 +4999,7 @@ export class WorkspaceStore {
       statement(`DELETE FROM push_subscriptions WHERE user_id = ?`, userId),
       statement(`DELETE FROM favorites WHERE user_id = ?`, userId),
       statement(`DELETE FROM profile_field_values WHERE user_id = ?`, userId),
+      statement(`DELETE FROM saves WHERE user_id = ?`, userId),
       statement(`DELETE FROM blocks WHERE user_id = ?1 OR blocked_id = ?1`, userId),
       statement(`DELETE FROM identities WHERE user_id = ?`, userId),
       statement(`DELETE FROM pending_identities WHERE user_id = ?`, userId),
@@ -6802,7 +6803,10 @@ export class WorkspaceStore {
 
           people: people.map((person) => {
             const until = untilOf.get(person.id);
-            return until === undefined ? { ...person, member: person.member === 1 } : { ...person, member: true, guestUntil: new Date(until).toISOString() };
+            // `member` stays as the memberships say it, so a stay whose room has dropped the guest
+            // reports them out, and saving the room's other changes takes nobody back in; their stay
+            // is named apart, that its panel may keep offering its end to whoever can change the room.
+            return until === undefined ? { ...person, member: person.member === 1 } : { ...person, member: person.member === 1, guestUntil: new Date(until).toISOString() };
           }),
         }
       : null;

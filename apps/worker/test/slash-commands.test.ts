@@ -304,7 +304,7 @@ describe("Message events", () => {
     expect(delivered).toHaveLength(1);
   });
 
-  it("delivers a reply left to its thread alone to no bot watching the room, one the reply mentions excepted", async () => {
+  it("delivers a reply left to its thread alone to a bot watching the room, its permalink opening the thread, and a reply that names it as the one event either way", async () => {
     const { ada, bot, general } = await withBot();
     expect((await subscribe(ada, bot.id, general)).status).toBe(204);
     const inRoom = await connect(general, ada);
@@ -314,25 +314,25 @@ describe("Message events", () => {
     const root = await post(inRoom, "Starting a thread");
     await vi.waitFor(() => expect(delivered).toHaveLength(1));
 
-    // A reply to the thread alone is none of the room's events, so watching the room delivers
-    // nothing of it, though it names no one.
+    // A reply to the thread alone is its room's event for a watching bot, whose permalink opens the
+    // thread at the reply.
     const alone = crypto.randomUUID();
     inRoom.send({ type: "message.create", clientMessageId: alone, body: "<p>To the thread alone</p>", parentId: root.id });
     await inRoom.next("message.created");
-    await settle(inRoom);
-    expect(delivered).toHaveLength(1);
+    await vi.waitFor(() => expect(delivered).toHaveLength(2));
+    expect(sentIn(delivered[1]!).type).toBe("event_callback");
+    expect(sentIn(delivered[1]!).text).toContain("To the thread alone");
 
-    // A reply left to its thread that names the bot is still its to answer, as a mention is, which
-    // comes as a mention's delivery comes, kept to the thread it was said in.
+    // A reply left to its thread that names the bot is one event either way, kept to the thread it
+    // was said in.
     const named = crypto.randomUUID();
     inRoom.send({ type: "message.create", clientMessageId: named, body: `<p>@Deploy Bot ${mention(bot)}, to you alone</p>`, parentId: root.id });
     await inRoom.next("message.created");
-    await vi.waitFor(() => expect(delivered).toHaveLength(2));
-    expect(sentIn(delivered[1]!)).toMatchObject({
-      room: { id: general },
-      user: { id: ada.user.id },
-      message: { id: expect.any(String), body: { plain: expect.stringContaining("to you alone") }, path: expect.stringContaining(`/threads/${root.id}/`) },
-    });
+    await vi.waitFor(() => expect(delivered).toHaveLength(3));
+    const sent = sentIn(delivered[2]!);
+    expect(sent.type).toBe("event_callback");
+    expect(sent.text).toContain("to you alone");
+    expect((sent as { event: { thread_id: string } }).event.thread_id).toBe(root.id);
     await settle(inRoom);
   });
 

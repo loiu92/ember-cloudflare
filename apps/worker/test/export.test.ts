@@ -79,11 +79,19 @@ describe("The workspace export", () => {
       { name: linus.name, emailAddress: linus.emailAddress, role: "member", status: "active" },
     ]);
     // The shared rooms by name, then the DMs in the order they were made, each naming who's in it when
-    // it's for just them, and an open room being everyone's, which names nobody.
+    // it's for just them, and an open room being everyone's, which names nobody. A join starts a DM
+    // that welcomes its newcomer to each welcomer here, which an export lists as any DM.
+    const directOf = (...members: string[]) => {
+      const room = listed.rooms.find((room) => room.kind === "direct" && room.memberIds !== undefined && room.memberIds.length === members.length && members.every((id) => room.memberIds!.includes(id)));
+      expect(room, `a DM of ${members.join(", ")}`).toBeDefined();
+      return { id: room!.id, kind: "direct", name: null, icon: null, createdAt: expect.any(String), memberIds: members };
+    };
     expect(listed.rooms).toEqual([
       { id: roomNamed(listed, "general").id, kind: "open", name: "general", icon: null, createdAt: expect.any(String) },
       { id: launch.id, kind: "closed", name: "Launch", icon: null, createdAt: expect.any(String), memberIds: [graceSession.user.id, linusSession.user.id] },
       { id: roomNamed(listed, "random").id, kind: "open", name: "random", icon: null, createdAt: expect.any(String) },
+      directOf(administrator.user.id, graceSession.user.id),
+      directOf(administrator.user.id, linusSession.user.id),
       { id: together.id, kind: "direct", name: null, icon: null, createdAt: expect.any(String), memberIds: [graceSession.user.id, linusSession.user.id] },
       { id: toHerself.id, kind: "direct", name: null, icon: null, createdAt: expect.any(String), memberIds: [graceSession.user.id] },
     ]);

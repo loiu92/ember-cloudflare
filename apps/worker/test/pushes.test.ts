@@ -345,11 +345,11 @@ describe("Who gets a push", () => {
       // The retries and settling migrations as a workspace that ran the branch before upstream took its
       // slots has them recorded.
       const sqlOf = (name: string) => MIGRATIONS.find(({ name: applied }) => applied === name)!.sql;
-      sql.exec(sqlOf("0080_reminders.sql"));
+      sql.exec(sqlOf("0084_reminders.sql"));
       sql.exec("INSERT INTO d1_migrations (name) VALUES (?)", "0067_reminders.sql");
-      sql.exec(sqlOf("0081_reminder_push_retries.sql"));
+      sql.exec(sqlOf("0085_reminder_push_retries.sql"));
       sql.exec("INSERT INTO d1_migrations (name) VALUES (?)", "0068_reminder_push_retries.sql");
-      sql.exec(sqlOf("0082_reminder_pushes.sql"));
+      sql.exec(sqlOf("0090_reminder_pushes.sql"));
       sql.exec("INSERT INTO d1_migrations (name) VALUES (?)", "0074_reminder_pushes.sql");
       const at = Date.now();
       sql.exec(
@@ -372,7 +372,7 @@ describe("Who gets a push", () => {
     // What the workspace kept of its reminder's pushes survives the migrations' new names, which ran no
     // column onto the table again.
     expect(kept).toEqual([{ id: "r1", tried: 1, delivered: '["b1"]', settled: 1 }]);
-    expect(recorded).toEqual(["0080_reminders.sql", "0081_reminder_push_retries.sql", "0082_reminder_pushes.sql"]);
+    expect(recorded).toEqual(["0084_reminders.sql", "0085_reminder_push_retries.sql", "0090_reminder_pushes.sql"]);
   });
 });
 
