@@ -6682,14 +6682,14 @@ export class Workspace extends DurableObject<Env> {
    * bot isn't in the room, as `botInRoom` answers. A token only a webhook's delivery gives a bot has
    * no "-" in it, so no key names it here.
    */
-  async slackBotIn(key: string, roomId: RoomId): Promise<BotAccess | "not found" | null> {
+  async slackBotIn(key: string, roomId: RoomId): Promise<(BotAccess & { takesClicks: boolean }) | "not found" | null> {
     const parts = botKeyParts(key);
     if (!parts) return null;
     // Before anything is read, as `roomAccess` takes it.
     const authorizedAt = Date.now();
     const found = await this.store.activeBotKey(parts.botId, roomId);
     if (!found || !isBotToken(parts.token, found.token)) return null;
-    return found.member ? { bot: found.bot, authorizedAt } : "not found";
+    return found.member ? { bot: found.bot, authorizedAt, takesClicks: found.webhook !== null } : "not found";
   }
 
   /** Whether `token` is the one a delivery to the webhook of the bot `found` gives it in room `roomId`, as the webhook is now. */

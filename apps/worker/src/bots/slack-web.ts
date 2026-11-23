@@ -166,7 +166,9 @@ async function postMessage(env: Env, request: Request): Promise<Response> {
   const inChannel = await botChannelIn(env, key, fields);
   if (inChannel instanceof Response) return inChannel;
   const thread = textOf(fields.thread_ts);
-  const message = slackMessage(fields);
+  // A bot with a webhook has somewhere for a card's clicks to go, so its buttons that act stay, as its
+  // webhook's payloads keep them.
+  const message = slackMessage(fields, inChannel.access.takesClicks);
   if (typeof message === "string") return refused(message);
   const created = await env.CHAT_ROOM.getByName(inChannel.roomId).createBotMessage(inChannel.roomId, inChannel.access, message.markup, message.cards, present(thread));
   if (!created) return refused(thread === "" ? "channel_not_found" : "message_not_found");
@@ -184,7 +186,9 @@ async function chatUpdate(env: Env, request: Request): Promise<Response> {
   if (inChannel instanceof Response) return inChannel;
   const ts = textOf(fields.ts);
   if (ts === "") return refused("message_not_found");
-  const message = slackMessage(fields);
+  // As `chat.postMessage` keeps them: an update without the bot's webhook would take the acting buttons
+  // the message's card has.
+  const message = slackMessage(fields, inChannel.access.takesClicks);
   if (typeof message === "string") return refused(message);
   const edited = await env.CHAT_ROOM.getByName(inChannel.roomId).editBotMessage(inChannel.roomId, inChannel.access, ts, message.markup, message.cards);
   if (edited === NOT_FOUND) return refused("message_not_found");
@@ -243,18 +247,20 @@ const HISTORY_PAGES = 5;
  * The newest `limit` of a room's messages, newest first, as Slack's history reads them, with whether
  * the room has older ones than the oldest answered: the pages a bot reads, gathered back from the
  * newest until it has `limit`, its deleted messages left out, at five pages of the room's at most, so
- * a room whose tail is its deleted messages' places can't be walked page by page.
+ * a room whose tail is its deleted messages' places can't be walked page by page. Each page is read
+ * without the room's count, which Slack's history has nowhere to put and which, on D1, reads a row
+ * for every message the room has.
  */
 async function historyIn(env: Env, roomId: RoomId, limit: number): Promise<{ messages: Message[]; hasMore: boolean } | null> {
   const room = env.CHAT_ROOM.getByName(roomId);
-  const first = await room.botPage(roomId, {});
+  const first = await room.outsidePage(roomId, {});
   if (first === null) return null;
   const collected = first.messages.filter(({ deleted }) => deleted !== true);
   // The room pages from a deleted message all the same, so the cursor is the page's first, kept or not.
   let oldest = first.messages[0]?.id;
   let hasMore = first.hasMore;
   for (let pages = 1; pages < HISTORY_PAGES && hasMore && collected.length < limit && oldest !== undefined; pages++) {
-    const older = await room.botPage(roomId, { before: oldest });
+    const older = await room.outsidePage(roomId, { before: oldest });
     if (!older || older.messages.length === 0) break;
     collected.unshift(...older.messages.filter(({ deleted }) => deleted !== true));
     oldest = older.messages[0]!.id;
