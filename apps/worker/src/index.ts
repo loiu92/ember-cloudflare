@@ -197,6 +197,7 @@ import { isSlackWebApiPath, slackWebAction, slackWebFailure } from "./bots/slack
 import { ADDRESS_HEADER, AUTHORIZED_AT_HEADER, BANNED_HEADER, HUDDLE_HEADER, ROOM_HEADER, SESSION_HEADER, USER_HEADER } from "./chat-room";
 import { guestSignIn, type Env } from "./env";
 import { failed, notFound } from "./error-pages";
+import { exportListing, exportRoomMessages } from "./export";
 import { jsonWithETag } from "./etag";
 import { fileAddressOf, serveFile } from "./files/serving";
 import { pictureFormOf } from "./files/pictures";
@@ -1859,6 +1860,11 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   // A save's id is a UUID, which never needs percent-encoding, so an encoded segment names none.
   const save = pathname.match(/^\/api\/saves\/([^/]+)$/);
   if (save && request.method === "DELETE") return () => forgetSave(request, env, save[1]!);
+  if (pathname === "/api/export" && request.method === "GET") return () => exportListing(request, env);
+  // A room's id never needs percent-encoding, so an encoded segment names no room of the export.
+  const exportRoom = pathname.match(/^\/api\/export\/rooms\/([^/]+)\/messages$/);
+  if (exportRoom && request.method === "GET")
+    return () => (isRoomId(exportRoom[1]!) ? exportRoomMessages(request, env, exportRoom[1]!) : problem(404, ROOM_NOT_FOUND));
   if (pathname === "/api/push-subscriptions" && request.method === "GET") return () => listPushSubscriptions(request, env);
   if (pathname === "/api/push-subscriptions" && request.method === "POST") return () => savePushSubscription(request, env);
   const pushSubscription = pathname.match(/^\/api\/push-subscriptions\/([^/]+)$/);

@@ -170,6 +170,7 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | **Bots that answer** | ✅ through a webhook per bot | ✅ through Slack apps |
 | **Slack's Web API for bots** | ✅ auth.test, chat.postMessage, chat.update, chat.delete, conversations.list and conversations.history | ✅ |
 | **Slash commands and bot events** | ✅ a bot answers /commands and hears the rooms it is in | ✅ |
+| **Export everything** | ✅ an administrator exports every message, DMs included, as NDJSON | ✅ on Business+ (compliance exports) |
 | **Ways to join** | Join link and QR code, email invitations, email domains, open sign-up with Turnstile, Memberful | Invitations, invite links and approved email domains |
 | **Guests** | ✅ a guest for one room, whose stay ends when you choose | ✅ guest accounts (paid plans) |
 | **Single sign-on** | Memberful, for membership communities | Google on every plan, and SAML SSO with SCIM on Business+ |
@@ -186,7 +187,7 @@ it's yours. Slack's plans are as [slack.com/pricing](https://slack.com/pricing) 
 | **Channels shared with other companies** | — | ✅ Slack Connect |
 | **Scheduled messages** | — | ✅ |
 | **Guest accounts** | — | ✅ on paid plans |
-| **Exports of every message, DMs included** | — not yet | ✅ on Business+ and up |
+| **Exports of every message, DMs included** | ✅ an administrator exports everything as NDJSON | ✅ on Business+ and up (compliance exports) |
 | **Support** | GitHub issues | ✅ 24/7 on Business+ |
 
 If your team lives in canvases, workflows and a hundred integrations, Slack earns its price. If you
