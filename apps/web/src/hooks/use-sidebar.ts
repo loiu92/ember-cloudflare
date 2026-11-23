@@ -121,6 +121,7 @@ export function useSidebar(
   onDndChanged: (dndUntil: string | null, read?: boolean) => void = () => {},
   onDndConnecting: () => void = () => {},
   onInvitation: (change: InvitationsChange) => void = () => {},
+  onSavesChanged: () => void = () => {},
 ) {
   const [{ list, askAgain }, change] = useReducer(roomListReducer, NO_ROOM_LIST);
   const [active] = useState(activeStore);
@@ -164,6 +165,7 @@ export function useSidebar(
   const dndChanged = useEffectEvent(onDndChanged);
   const dndConnecting = useEffectEvent(onDndConnecting);
   const invitation = useEffectEvent(onInvitation);
+  const savesChanged = useEffectEvent(onSavesChanged);
   const isSomeoneElse = useEffectEvent((user: User) => user.id !== me.id);
   // Who the session signs in as last heard, ahead of `me` until the page takes the change: two changes
   // can come before it takes the first.
@@ -297,6 +299,8 @@ export function useSidebar(
           return change({ type: "reports", open: frame.open });
         case "invitation.dismissed":
           return change({ type: "invitation dismissed" });
+        case "saves.changed":
+          return savesChanged();
         case "rooms.reordered":
           return reloadRoomsSoon();
         case "account.updated":

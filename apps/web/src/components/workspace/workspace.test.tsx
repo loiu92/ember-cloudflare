@@ -191,6 +191,8 @@ const railCurrent = () =>
     .map((link) => link.getAttribute("aria-label") ?? link.textContent);
 /** How many times the room list was asked for. */
 const roomListRequests = () => vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/sidebar").length;
+/** How many times the saves list was asked for. */
+const savesAsked = () => vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/saves" && (init?.method ?? "GET") === "GET").length;
 /** Community settings' heading for the section of workspace settings that's shown first. */
 const communitySettings = () => screen.findByRole("heading", { level: 1, name: "Basic community settings" });
 
@@ -1096,6 +1098,7 @@ describe("Rail", () => {
   });
 });
 
+
 describe("Do not disturb", () => {
   const HUSHED = new Date(Date.now() + 60 * 60_000).toISOString();
   const profileLink = () => screen.getByRole("link", { name: "Your profile" });
@@ -1291,6 +1294,7 @@ describe("Saved pane", () => {
     // The pane covers the room, which opens as a hidden tab's would: reading nothing, counting as away.
     expect(room.url).toContain("visible=0");
     room.letIn();
+
     // The room asked for its pins as it opened, which is no reading of it.
     expect(room.sent).toEqual([{ type: "pins.list" }]);
     await user.click(within(pane).getByRole("button", { name: "Close saved messages" }));
@@ -1355,6 +1359,27 @@ describe("Saved pane", () => {
     expect(general).toHaveClass("font-[650]");
     expect(screen.getByRole("button", { name: "Activity" })).toHaveAccessibleDescription("1 unread");
     await waitFor(() => expect(badges).toEqual([1]));
+  });
+
+  it("asks for the saves again when the workspace socket says another tab has saved or removed one", async () => {
+    vi.stubGlobal("WebSocket", WorkspaceSocket);
+    serve({ "GET /api/saves": () => Response.json({ saves: [] }) });
+    showWorkspace("/rooms/general");
+    await roomHeading();
+    expect(savesAsked()).toBe(1);
+    await workspaceSends({ type: "saves.changed" });
+    await waitFor(() => expect(savesAsked()).toBe(2));
+  });
+});
+
+describe("Layout", () => {
+  it("shows the room, its sidebar and the rail once", async () => {
+    serve({ "GET /api/saves": () => Response.json({ saves: [] }) });
+    showWorkspace("/rooms/general");
+    await roomHeading();
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.getAllByRole("complementary", { name: "Conversations" })).toHaveLength(1);
+    expect(screen.getAllByRole("navigation", { name: "Workspace" })).toHaveLength(1);
   });
 });
 

@@ -1,7 +1,7 @@
 import type { Message, RoomId, SavedItem, SavedMessage } from "@ember/protocol";
 import { MAX_SAVES } from "@ember/protocol";
 import { beforeEach, describe, expect, it } from "vitest";
-import { api, connect, createRoom, direct, freshDeploy, post, settle, signIn, workspaceSql, type Session, type Socket } from "./support";
+import { api, connect, createRoom, direct, freshDeploy, openWorkspaceSocket, post, settle, signIn, workspaceSql, type Session, type Socket } from "./support";
 
 /** Saves the message `messageId` of room `roomId` for `session`'s person, as More actions does. */
 const save = (session: Session, roomId: RoomId, messageId: string) =>
@@ -45,6 +45,10 @@ async function replyIn(client: Socket, parentId: string, body: string): Promise<
     if (message.clientMessageId === clientMessageId) return message;
   }
 }
+
+/** The address the next request comes from, as Cloudflare's `CF-Connecting-IP` says. */
+let addresses = 0;
+const nextAddress = () => `192.0.2.${++addresses % 250}`;
 
 beforeEach(freshDeploy);
 
@@ -306,5 +310,48 @@ describe("Forget a save", () => {
   it("answers 401 to someone signed out", async () => {
     expect((await api("/api/saves/whatever", { method: "DELETE" })).status).toBe(401);
     expect((await api("/api/saves", { method: "GET" })).status).toBe(401);
+  });
+
+  it("tells the person's other tabs, over their workspace sockets, of each save and each remove", async () => {
+    const ada = await signIn("Ada");
+    const room = await createRoom("Design");
+    const { message, done } = await messageIn(room.id, ada, "For a while");
+    const laptop = await openWorkspaceSocket(ada);
+    const phone = await openWorkspaceSocket(ada);
+    await done();
+
+    const mine = await saved(save(ada, room.id, message.id));
+    expect((await laptop.next()).type).toBe("saves.changed");
+    expect((await phone.next()).type).toBe("saves.changed");
+
+    expect((await forget(ada, mine.id)).status).toBe(204);
+    expect((await laptop.next()).type).toBe("saves.changed");
+    expect((await phone.next()).type).toBe("saves.changed");
+    // A remove that isn't theirs tells no one.
+    expect((await forget(ada, mine.id)).status).toBe(404);
+  });
+});
+
+describe("Deleting the account", () => {
+  it("deletes the person's saves with their account, and another person's stay", async () => {
+    const ada = await signIn("Ada");
+    const grace = await signIn("Grace");
+    const room = await createRoom("Design");
+    const { message, done } = await messageIn(room.id, ada, "Kept for a moment");
+    const mine = await saved(save(ada, room.id, message.id));
+    const theirs = await saved(save(grace, room.id, message.id));
+    await done();
+
+    // Ada has no password, so she says she means it by typing her name.
+    const response = await api("/api/users/me", {
+      method: "DELETE",
+      headers: { "CF-Connecting-IP": nextAddress(), Cookie: ada.cookie },
+      body: JSON.stringify({ name: "Ada" }),
+    });
+    expect(response.status, await response.clone().text()).toBe(204);
+    expect(await storedSaves(ada)).toEqual([]);
+    expect(await storedSaves(grace)).toEqual([theirs.id]);
+    // Their sessions went with the account, so the API answers nobody for them either.
+    expect((await api("/api/saves", { headers: { Cookie: ada.cookie } })).status).toBe(401);
   });
 });

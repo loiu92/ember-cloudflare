@@ -1,19 +1,4 @@
-import {
-  CloseCode,
-  CURRENT_PASSWORD_WRONG,
-  DELETED_PERSON_NAME,
-  DELETION_NAME_NEEDED,
-  DELETION_PASSWORD_NEEDED,
-  ONLY_ADMINISTRATOR,
-  SIGN_IN_LIMITED,
-  type Directory,
-  type DirectoryUser,
-  type Me,
-  type Message,
-  type NewWorkspace,
-  type RoomId,
-  type UserId,
-} from "@ember/protocol";
+import { CloseCode, CURRENT_PASSWORD_WRONG, DELETED_PERSON_NAME, DELETION_NAME_NEEDED, DELETION_PASSWORD_NEEDED, ONLY_ADMINISTRATOR, SIGN_IN_LIMITED, type Directory, type DirectoryUser, type Me, type Message, type NewWorkspace, type RoomId, type UserId } from "@ember/protocol";
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,32 +7,7 @@ import type { Env } from "../src/env";
 import { objectKey } from "../src/files/blobs";
 import { BOOSTS_BY, RENAME_AUTHOR } from "../src/store";
 import type { OutsideSender, Workspace } from "../src/workspace";
-import {
-  api,
-  closeOf,
-  connect,
-  cookieOf,
-  createRoom,
-  direct,
-  freshDeploy,
-  freshRoom,
-  openWorkspaceSocket,
-  origin,
-  post,
-  reconnect,
-  recordedImage,
-  roomSql,
-  roomStub,
-  settle,
-  shown,
-  signIn,
-  upgrade,
-  upload,
-  workspaceSql,
-  workspaceStub,
-  type Session,
-  type Socket,
-} from "./support";
+import { api, closeOf, connect, cookieOf, createRoom, direct, freshDeploy, freshRoom, openWorkspaceSocket, origin, post, reconnect, recordedImage, roomSql, roomStub, settle, shown, signIn, upgrade, upload, workspaceSql, workspaceStub, type Session, type Socket } from "./support";
 
 // Delete my account, on your profile, which Apple asks of every app with accounts: everything removing
 // someone does, then their messages and boosts in every room, and everything else of them but their row.
@@ -208,7 +168,7 @@ describe("Delete my account", () => {
     expect(await workspaceSql("SELECT object_key FROM pending_picture_deletions")).toEqual([]);
   });
 
-  it("forgets everything else of yours: your rooms but DMs, starred rooms, searches, push subscriptions and accounts elsewhere", async () => {
+  it("forgets everything else of yours: your rooms but DMs, starred rooms, saves, searches, push subscriptions and accounts elsewhere", async () => {
     const administrator = await setUp();
     const member = await join(grace);
     const lobby = await freshRoom("lobby");
@@ -223,9 +183,10 @@ describe("Delete my account", () => {
       now,
     );
     await workspaceSql("INSERT INTO identities (issuer, subject, user_id, created_at, updated_at) VALUES ('https://fernwood.memberful.com', '42', ?, ?, ?)", member.user.id, now, now);
+    await workspaceSql("INSERT INTO saves (id, user_id, room_id, message_id, created_at) VALUES ('save-1', ?, ?, 'message-1', ?)", member.user.id, lobby, now);
 
     await deleteGraces(member);
-    for (const table of ["favorites", "recent_searches", "push_subscriptions", "identities", "sessions"]) expect(await rowsOf(table, member.user.id), table).toBe(0);
+    for (const table of ["favorites", "saves", "recent_searches", "push_subscriptions", "identities", "sessions"]) expect(await rowsOf(table, member.user.id), table).toBe(0);
     // Their DMs keep them, so the people in them still see whom they were with.
     expect(((await workspaceSql("SELECT room_id FROM memberships WHERE user_id = ?", member.user.id)) as Array<{ room_id: string }>).map(({ room_id }) => room_id)).toEqual([dm]);
   });
