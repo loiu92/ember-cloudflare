@@ -316,7 +316,9 @@ describe("Who gets a push", () => {
     expect(asked).toEqual([1, 2, 3, 4, 5, 6]);
     banned.add(7);
     release();
-    expect(await sending).toEqual({ gone: [], delivered: [1, 2, 3, 4, 5, 6], failed: 0 });
+    // The push the ask was lost for went nowhere, yet it counts a failure: what sends the same
+    // deliveries again tries it once more, rather than taking it for sent.
+    expect(await sending).toEqual({ gone: [], delivered: [1, 2, 3, 4, 5, 6], failed: 1 });
     expect(asked).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(sent.map(([endpoint]) => new URL(endpoint).pathname)).toEqual([1, 2, 3, 4, 5, 6].map((i) => `/fcm/send/${i}`));
     expect(warn).toHaveBeenCalledExactlyOnceWith("push authorization failed for subscription 8: Error: The database's answer was lost");

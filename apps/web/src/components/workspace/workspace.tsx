@@ -14,7 +14,7 @@ import { useHuddle } from "@/hooks/use-huddle";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useMounted } from "@/hooks/use-mounted";
 import { useReleaseCheck } from "@/hooks/use-release-check";
-import { DismissReminder, isDue, useReminders } from "@/hooks/use-reminders";
+import { DismissReminder, dueReminderOf, useReminders } from "@/hooks/use-reminders";
 import { useSidebar } from "@/hooks/use-sidebar";
 import { SavesContext, useSaves } from "@/hooks/use-saves";
 import { answerHuddleInvitation, ApiError, changeBlock, dismissInvitation, isSignedOut, startDirect } from "@/lib/api";
@@ -297,7 +297,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onDe
   const directory = useDirectory();
   // Reminders of theirs, which the workspace socket tells this tab about as each one comes due or is
   // dismissed in another tab. Declared before the sidebar, whose socket hands it both.
-  const { reminders, cameDue, cameGone, dismiss: dismissReminder, load: reloadReminders } = useReminders();
+  const { reminders, announcedDue, cameDue, cameGone, dismiss: dismissReminder, load: reloadReminders } = useReminders();
   // When your push notifications are hushed until, which the workspace socket's welcome brings, Do not
   // disturb on your profile saves, and the socket tells your other tabs of, and the rail shows by the
   // crescent on your avatar. How many hushes have been heard counts as each change is applied, so a
@@ -1202,7 +1202,7 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onDe
           )}
           {/* The reminder that has come due, over whatever page it finds the person on, until they're done with it. */}
           {(() => {
-            const dueReminder = reminders?.find(isDue) ?? null;
+            const dueReminder = dueReminderOf(reminders, announcedDue);
             if (dueReminder === null) return null;
             const reminderRoom = rooms?.find((candidate) => candidate.id === dueReminder.roomId);
             const roomName = reminderRoom === undefined || reminderRoom.kind === "direct" ? null : (reminderRoom.name ?? null);
@@ -1213,9 +1213,9 @@ export function Workspace({ me, workspaceName, onAccountChanged, onSignOut, onDe
                 onOpen={() => {
                   navigate(dueReminder.parentId === undefined ? messagePath(dueReminder.roomId, dueReminder.messageId) : threadPath(dueReminder.roomId, dueReminder.parentId, dueReminder.messageId));
                   // The page may hold the person with unsaved changes, so it's done with only once they've gone there.
-                  afterNavigating(() => void dismissReminder(dueReminder.id));
+                  afterNavigating(() => void dismissReminder(dueReminder.id).catch(failed));
                 }}
-                onDone={() => void dismissReminder(dueReminder.id)}
+                onDone={() => void dismissReminder(dueReminder.id).catch(failed)}
               />
             );
           })()}
