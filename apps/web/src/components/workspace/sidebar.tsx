@@ -336,10 +336,11 @@ interface DirectRowProps {
  * each, then their names, or yours in a DM with yourself, the agent badge in a DM with an AI agent
  * alone, and what the one other person wears beside their name, muted.
  * A DM's row: the avatar of the one other person in it, with whether they're active or away, or of up
- * to four in a group, at 24px or 14px each, then their names, or yours in a DM with yourself, and the
- * agent badge in a DM with an AI agent alone. It ends with who's in its huddle while one is going on, as
- * a room's does, and one marked unread with how many messages it counts, or a dot for one the server
- * didn't count. Its presence and count are said to screen readers too.
+ * to four in a group, at 24px or 14px each, then their names, or yours in a DM with yourself, the agent
+ * badge in a DM with an AI agent alone, and what the one other person wears beside their name, muted.
+ * It ends with who's in its huddle while one is going on, as a room's does, and one marked unread with
+ * how many messages it counts, or a dot for one the server didn't count. Its presence and count are said
+ * to screen readers too.
  */
 function DirectRow({ room, meId, current, unreadId, huddle, onClick }: DirectRowProps) {
   const nameOf = useNameOf();
