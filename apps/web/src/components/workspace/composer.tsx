@@ -498,6 +498,23 @@ export function Composer({ roomId, roomName, direct = false, userId, typing, dis
     );
     return asking.current;
   };
+  // The commands as the workspace has them now, asked for again though some were had: what's written
+  // that no command here names is told from a message only once they're had afresh, that one
+  // registered since they came is run, and not posted to the room as its text.
+  const askAnew = (): Promise<Command[] | null> => {
+    asking.current = fetchCommands().then(
+      (loaded) => {
+        asking.current = null;
+        setCommands(loaded.commands);
+        return loaded.commands;
+      },
+      () => {
+        asking.current = null;
+        return null;
+      },
+    );
+    return asking.current;
+  };
   // What the menu of commands shows: those `fragment` starts, and the one it highlights, which Enter and
   // the arrows move among. Empty once nothing matches, so a slash that's no command is sent as written.
   const [offered, setOffered] = useState<Command[]>([]);
@@ -515,6 +532,7 @@ export function Composer({ roomId, roomName, direct = false, userId, typing, dis
     else if (!wasBlank.current) onTyping(false);
     wasBlank.current = body === null;
     keepDraft(key, body);
+
     // What the Send button shows of the draft, told before the command menu's looked for: writing plain
     // text, as a thread's composer always is, looks for no command, and would return before it was told.
     setBlank(body === null);
@@ -607,8 +625,9 @@ export function Composer({ roomId, roomName, direct = false, userId, typing, dis
   // anything's gone, as Slack unticks it. What's written that begins with one of the workspace's
   // commands goes as an invocation, which the room answers, and not as a message — and what begins with
   // a slash waits for the commands to be had first, that a registered one isn't posted to the room while
-  // they're on their way. One that couldn't be had keeps what's written to be sent again, and what's
-  // written by the time they arrive is what goes, so writing that waited with it is kept.
+  // they're on their way, and is had again before it's told from a message they don't name, that one
+  // registered since they came is run. Commands that can't be had keep what's written to be sent again,
+  // and what's written by the time they arrive is what goes, so writing that waited with it is kept.
   const submit = async () => {
     if (disabled || submitting.current) return;
     submitting.current = true;
@@ -628,7 +647,12 @@ export function Composer({ roomId, roomName, direct = false, userId, typing, dis
         if (fragment !== null && !had) return;
         // Emptied while the commands were on their way is nothing to send.
         if (written.isBlank()) return;
-        const invocation = had && onRunCommand ? commandInvocationOf(asWritten(), had) : null;
+        let invocation = had && onRunCommand ? commandInvocationOf(asWritten(), had) : null;
+        if (!invocation && fragment !== null && commands !== null) {
+          const anew = await askAnew();
+          if (!anew || written.isBlank()) return;
+          invocation = commandInvocationOf(asWritten(), anew);
+        }
         const markup = written.value();
         if (invocation && onRunCommand) {
           // What the room wouldn't run, as when its queue is full or the bot refused it, comes back to
