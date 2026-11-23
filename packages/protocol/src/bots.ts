@@ -1,4 +1,5 @@
-import { isReservedName, MAX_USER_NAME_LENGTH, NAME_RESERVED, type DirectoryUser, type RoomId } from "./index.ts";
+import { commandNameOf, isReservedName, NAME_RESERVED, MAX_COMMAND_NAME_LENGTH, MAX_USER_NAME_LENGTH, type DirectoryUser, type RoomId, type User, type UserId } from "./index.ts";
+import { roomsIn } from "./agents.ts";
 
 // Chat bots, as administrators add, change and delete them through `/api/account/bots`, as Campfire's
 // `accounts/bots` and `accounts/bots/keys` controllers do.
@@ -44,9 +45,14 @@ export interface Bot extends DirectoryUser {
   rooms: BotRoom[];
 }
 
-/** A bot as its edit page shows it: as the bots page lists it, with where its webhook delivers, or null for nowhere. */
+/**
+ * A bot as its edit page shows it: as the bots page lists it, with where its webhook delivers, or null
+ * for nowhere, and the open rooms it's kept to, by name, or null while it's in every open room, new ones
+ * too, as an AI agent can be kept.
+ */
 export interface BotSettings extends Bot {
   webhookUrl: string | null;
+  pickedRooms: BotRoom[] | null;
 }
 
 /** What `GET /api/account/bots` answers: the active bots, by name. */
@@ -63,28 +69,39 @@ export interface BotAnswer {
 }
 
 /**
- * What `PATCH /api/account/bots/<id>` changes, as the bot form saves it: the bot's name, and where its
- * webhook delivers, "" for nowhere. What's left out stays as it is.
+ * What `PATCH /api/account/bots/<id>` changes, as the bot form saves it: the bot's name, where its
+ * webhook delivers, "" for nowhere, and the open rooms it's kept to, or null for every open room, new
+ * ones too. Private rooms it was put in keep it either way. What's left out stays as it is.
  */
 export interface BotChanges {
   name?: string;
   webhookUrl?: string;
-}
-
-/** What `POST /api/account/bots` takes, as the bot form adds one: a name, and where its webhook delivers, if anywhere. */
-export interface NewBot {
-  name: string;
-  webhookUrl?: string;
+  rooms?: RoomId[] | null;
 }
 
 /**
+ * What `POST /api/account/bots` takes, as the bot form adds one: a name, where its webhook delivers, if
+ * anywhere, and the open rooms it's kept to, or null, or nothing, for every open room.
+ */
+export interface NewBot {
+  name: string;
+  webhookUrl?: string;
+  rooms?: RoomId[] | null;
+}
+
+/** Why the rooms a bot's kept to are refused: they're rooms' IDs, each once, or null for every open room. */
+export const BOT_ROOMS_REFUSED = "Rooms must be a list of rooms' IDs, each once, or null for every open room";
+
+/**
  * Parses an untrusted change to a bot. Returns why it's refused instead: a name has to have more than
- * spaces, and no more than a person's name can (`MAX_USER_NAME_LENGTH`). The name is saved as typed, and
- * the webhook URL trimmed, as the form's URL field sends it; the Worker checks that it's a URL.
+ * spaces, and no more than a person's name can (`MAX_USER_NAME_LENGTH`), and rooms are a list of rooms'
+ * IDs, each once, or null (`roomsIn`). The name is saved as typed, and the webhook URL trimmed, as the
+ * form's URL field sends it; the Worker checks that it's a URL. A room picked that isn't open isn't
+ * joined.
  */
 export function parseBotChanges(data: unknown): BotChanges | string {
   if (typeof data !== "object" || data === null || Array.isArray(data)) return "Expected a JSON object";
-  const { name, webhookUrl } = data as Record<string, unknown>;
+  const { name, webhookUrl, rooms } = data as Record<string, unknown>;
   const changes: BotChanges = {};
   if (name !== undefined) {
     if (typeof name !== "string") return "Name must be text";
@@ -97,6 +114,11 @@ export function parseBotChanges(data: unknown): BotChanges | string {
     const url = webhookUrl.trim();
     if (url.length > MAX_WEBHOOK_URL_LENGTH) return `Webhook URL can't be longer than ${MAX_WEBHOOK_URL_LENGTH} characters`;
     changes.webhookUrl = url;
+  }
+  if (rooms !== undefined) {
+    const picked = roomsIn(rooms);
+    if (picked === undefined) return BOT_ROOMS_REFUSED;
+    changes.rooms = picked;
   }
   return changes;
 }
@@ -111,4 +133,135 @@ export function parseNewBot(data: unknown): NewBot | string {
   if (typeof changes === "string") return changes;
   if (changes.name === undefined) return "Name can't be blank";
   return isReservedName(changes.name) ? NAME_RESERVED : { ...changes, name: changes.name };
+}
+
+// Slash commands and bots' subscriptions to message events, as administrators add and take them away
+// through `/api/account/commands` and a bot's rooms' addresses there, as Slack's slash commands and
+// event subscriptions have a workspace's.
+
+export { MAX_COMMAND_NAME_LENGTH, commandNameOf };
+
+/** The longest description a command can have. */
+export const MAX_COMMAND_DESCRIPTION_LENGTH = 200;
+
+/** Why a command's name is refused: letters, numbers, dashes and underscores, one case. */
+export const COMMAND_NAME_REFUSED = "A command's name is letters, numbers, dashes and underscores";
+
+/** Why a command with a name that's taken already is refused, as Slack keeps its commands' names apart. */
+export const COMMAND_NAME_TAKEN = "A command with that name is registered already";
+
+/** Why a bot is refused for a room's message events it isn't in the room for. */
+export const NOT_IN_ROOM = "The bot has to be in the room first";
+
+/** A command as the bots page and the composer's menu list it: its name, what it's for, and the bot it invokes. */
+export interface Command {
+  id: string;
+  /** The name as it's kept, without the leading "/" and lowercased, which typing either way finds. */
+  name: string;
+  description: string | null;
+  /** The bot it invokes, as rooms and lists name it. */
+  bot: User;
+}
+
+/** A bot's subscription to a room's message events, as the bots page ticks it. */
+export interface EventSubscription {
+  botId: UserId;
+  roomId: RoomId;
+}
+
+/** What `GET /api/account/commands` answers: the workspace's commands, and bots' subscriptions, by bot and room. */
+export interface Commands {
+  commands: Command[];
+  subscriptions: EventSubscription[];
+}
+
+/** What `POST /api/account/commands` answers, once it has registered one. */
+export interface CommandAnswer {
+  command: Command;
+}
+
+/** What `POST /api/account/commands` takes: the bot it invokes, a name, and what it's for, if anything. */
+export interface NewCommand {
+  botId: UserId;
+  name: string;
+  description?: string;
+}
+
+/**
+ * Parses an untrusted new command. Returns why it's refused instead: a name has to be one
+ * (`commandNameOf`), of no more than `MAX_COMMAND_DESCRIPTION_LENGTH` characters when there is one,
+ * and the bot it invokes a person's id.
+ */
+export function parseNewCommand(data: unknown): NewCommand | string {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return "Expected a JSON object";
+  const { botId, name, description } = data as Record<string, unknown>;
+  if (typeof botId !== "string" || !botId) return "Which bot it invokes must be a person";
+  if (typeof name !== "string") return "Name must be text";
+  const kept = commandNameOf(name);
+  if (!kept) return COMMAND_NAME_REFUSED;
+  if (description === undefined) return { botId, name: kept };
+  if (typeof description !== "string") return "Description must be text";
+  const trimmed = description.trim();
+  if (trimmed.length > MAX_COMMAND_DESCRIPTION_LENGTH) return `Description can't be longer than ${MAX_COMMAND_DESCRIPTION_LENGTH} characters`;
+  return { botId, name: kept, ...(trimmed !== "" && { description: trimmed }) };
+}
+
+// Message shortcuts, as administrators add and take them away through `/api/account/shortcuts`, as
+// Slack's message shortcuts have a workspace's: a name as it's shown ("Translate this"), what it's
+// for, and the bot it invokes. Picking one in a message's More actions delivers a Slack-shaped
+// `message_action` payload about that message to the bot's webhook, as a command's delivery is, and
+// what the bot answers is posted as the bot.
+
+/** The longest name a shortcut can have, where Slack gives a shortcut's name 80 characters. */
+export const MAX_SHORTCUT_NAME_LENGTH = 80;
+
+/** Why a shortcut with a name that's taken already is refused, as Slack keeps its shortcuts' names apart. */
+export const SHORTCUT_NAME_TAKEN = "A shortcut with that name is registered already";
+
+/** A shortcut as the bots page lists it and a message's More actions offers it: its name, what it's for, and the bot it invokes. */
+export interface Shortcut {
+  id: string;
+  /** The name as it's kept, as it's shown: "Translate this", capitals and all, where a command's is one case. */
+  name: string;
+  description: string | null;
+  /** The bot it invokes, as rooms and lists name it. */
+  bot: User;
+}
+
+/** What `GET /api/account/shortcuts` answers: the workspace's shortcuts, by name. */
+export interface Shortcuts {
+  shortcuts: Shortcut[];
+}
+
+/** What `POST /api/account/shortcuts` answers, once it has registered one. */
+export interface ShortcutAnswer {
+  shortcut: Shortcut;
+}
+
+/** What `POST /api/account/shortcuts` takes: the bot it invokes, its name, and what it's for, if anything. */
+export interface NewShortcut {
+  botId: UserId;
+  name: string;
+  description?: string;
+}
+
+/**
+ * Parses an untrusted new shortcut. Returns why it's refused instead: a name has to have more than
+ * spaces, and no more than `MAX_SHORTCUT_NAME_LENGTH` of them, kept as they're typed — a shortcut's
+ * name is shown, where a command's is a name to type — its description no more than a command's can
+ * have when there is one, and the bot it invokes a person's id.
+ */
+export function parseNewShortcut(data: unknown): NewShortcut | string {
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return "Expected a JSON object";
+  const { botId, name, description } = data as Record<string, unknown>;
+  if (typeof botId !== "string" || !botId) return "Which bot it invokes must be a person";
+  if (typeof name !== "string") return "Name must be text";
+  const kept = name.trim();
+  if (!kept) return "Name can't be blank";
+  if (kept.length > MAX_SHORTCUT_NAME_LENGTH) return `Name can't be longer than ${MAX_SHORTCUT_NAME_LENGTH} characters`;
+  if (description === undefined) return { botId, name: kept };
+  if (typeof description !== "string") return "Description must be text";
+  const trimmed = description.trim();
+  if (trimmed.length > MAX_COMMAND_DESCRIPTION_LENGTH) return `Description can't be longer than ${MAX_COMMAND_DESCRIPTION_LENGTH} characters`;
+  return { botId, name: kept, ...(trimmed !== "" && { description: trimmed }) };
 }

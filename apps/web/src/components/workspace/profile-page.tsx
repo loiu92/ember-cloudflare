@@ -6,20 +6,29 @@ import {
   MAX_EMAIL_ADDRESS_LENGTH,
   MAX_PASSWORD_LENGTH,
   MAX_USER_NAME_LENGTH,
+  MAX_PROFILE_FIELD_VALUE_LENGTH,
   MEMBERFUL_DISCONNECTED_NOTICE,
   MIN_PASSWORD_LENGTH,
+  sameMood,
+  type AccountDeletion,
   type Me,
   type MemberfulStatus,
+  type PersonMood,
   type Profile,
   type ProfileAnswer,
   type ProfileChanges,
+  type ProfileFieldEntry,
   type SidebarRoom,
 } from "@ember/protocol";
+import { MEMBERFUL_WITH_SSO, SSO_DISCONNECTED_NOTICE, SSO_WITH_MEMBERFUL, type SsoStatus } from "@ember/protocol/sso";
+import type { HuddleSounds } from "@ember/protocol/huddles";
 import { AUTH_FORM } from "@/components/auth-page";
 import { FIELD_INPUT, Field, SubmitButton } from "@/components/field";
 import { useFlash } from "@/components/flash";
 import { LogOut } from "@/components/icons/iconoir";
 import { Input } from "@/components/ui/input";
+import { UsernameField } from "@/components/username-field";
+import { useAccount } from "@/hooks/use-account";
 import { PeopleContext } from "@/hooks/use-directory";
 import { useMounted } from "@/hooks/use-mounted";
 import { usePush } from "@/hooks/use-push";
@@ -31,16 +40,23 @@ import { pushEndpoint } from "@/lib/push";
 import type { RoomAnswer } from "@/lib/room-list";
 import { cn } from "@/lib/utils";
 import { AnswerLevels } from "./answer-levels";
+import { BlockedPeople } from "./blocked-people";
 import { ConversationNotifications } from "./conversation-notifications";
+import { DoNotDisturb } from "./do-not-disturb";
+import { DeleteAccount } from "./delete-account";
+import { HuddleSoundSwitches } from "./huddle-sound-switches";
 import { MemberfulConnection } from "./memberful-connection";
 import { InstallInstructions } from "./notification-help";
 import { HEADER_TEXT_BUTTON } from "./page-header";
 import { PicturePicker } from "./picture-picker";
+import { SELECT } from "./model-picker";
 import { PageHeading, Panel, SettingsPage } from "./settings-page";
 import { SignInLink } from "./sign-in-link";
+import { SingleSignOnConnection } from "./sso-connection";
 import { avatarUrlOf, avatarVersionOf } from "./user-avatar";
 import { YourApps } from "./your-apps";
 import { YourOutsideAi } from "./your-outside-ai";
+import { MoodEditor } from "./mood-editor";
 
 interface Props {
   me: Me;
@@ -48,13 +64,25 @@ interface Props {
   rooms: SidebarRoom[] | null;
   /** Called as a bell saves your level in a room, with what gives the room the level the server answers. */
   askForRoom: () => (answer: RoomAnswer) => void;
+  /** When your push notifications are hushed until, as the workspace has it, or null while they aren't. */
+  dndUntil: string | null;
+  /** Shows your push notifications as this page loads them and the Do not disturb section saves them. */
+  onDndChanged: (dndUntil: string | null) => void;
+  /** Answers what loading the page read of your hush, which shows only if nothing was heard since the page asked for it, as the workspace's answers do. */
+  askForDnd: () => (dndUntil: string | null) => void;
+  /** Which of a huddle's sounds you hear, as the sidebar's list has them, or null while huddles are off, and until the list has loaded. */
+  huddleSounds: HuddleSounds | null;
+  /** Called as a switch saves one of a huddle's sounds, with what keeps the sounds the server answers. */
+  askForHuddleSounds: () => (sounds: HuddleSounds) => void;
   /** Signs out, settling with whether it did. */
   onSignOut: () => Promise<boolean>;
+  /** Deletes your account and goes to sign in, settling once it's deleted, or failing with why not. */
+  onDeleteAccount: (deletion: AccountDeletion) => Promise<void>;
   /** Says why loading or saving failed, as the workspace's alerts do. */
   onFailed: (error: unknown) => void;
 }
 
-const FIELDS = ["name", "emailAddress", "bio"] as const;
+const FIELDS = ["name", "username", "emailAddress", "bio"] as const;
 
 /** What the profile says once it has saved a new avatar. */
 export const AVATAR_CHANGED = "It may take up to 30 minutes to change everywhere.";
@@ -66,7 +94,7 @@ type Picture = Pick<Profile, "avatarUrl" | "avatar">;
 type Fields = Record<(typeof FIELDS)[number], string>;
 
 /** A profile in the form. */
-const fieldsOf = ({ name, emailAddress, bio }: Profile): Fields => ({ name, emailAddress: emailAddress ?? "", bio: bio ?? "" });
+const fieldsOf = ({ name, username, emailAddress, bio }: Profile): Fields => ({ name, username: username ?? "", emailAddress: emailAddress ?? "", bio: bio ?? "" });
 
 /**
  * The fields `typed` differently from `saved`, the profile as the page last loaded or saved it, and
@@ -79,6 +107,31 @@ function changesOf(saved: Fields, typed: Fields, password: string, currentPasswo
   for (const field of FIELDS) if (typed[field] !== saved[field]) changes[field] = typed[field];
   return changes;
 }
+
+/** What someone saved for the workspace's fields, by their ids. */
+type FieldValues = Record<string, string>;
+
+/** The fields' values `typed` differently from `saved`, which is all that's sent, or none when nothing differs. */
+function fieldChangesOf(saved: FieldValues, typed: FieldValues): Record<string, string> | null {
+  const changes: Record<string, string> = {};
+  for (const [id, value] of Object.entries(typed)) if (saved[id] !== value) changes[id] = value;
+  return Object.keys(changes).length > 0 ? changes : null;
+}
+
+/**
+ * The fields' values once `sent` is saved as `saved`: the fields the answer still asks, each still as
+ * it was typed shows what's typed, which may hold another tab's change, and the rest what the server
+ * answered. Its added fields are taken up, and its deleted ones dropped, so no later save names a
+ * field that's gone.
+ */
+function settledFieldValues(typed: FieldValues, sent: FieldValues, saved: FieldValues): FieldValues {
+  const values: FieldValues = {};
+  for (const id of Object.keys(saved)) values[id] = typed[id] === sent[id] ? (saved[id] ?? "") : (typed[id] ?? "");
+  return values;
+}
+
+/** What a profile's fields say someone saved, "" where they saved none. */
+const fieldValuesOf = (fields: ProfileFieldEntry[] | undefined): FieldValues => Object.fromEntries((fields ?? []).map(({ id, value }) => [id, value]));
 
 /**
  * `changes` with this browser's push subscription named, if it has one and they hold a new password,
@@ -99,24 +152,43 @@ function settled(typed: Fields, sent: Fields, saved: Fields): Fields {
   return fields;
 }
 
+/** What the new password field adds that saving one disconnects: the accounts elsewhere you've connected, or nothing. */
+function disconnectsWithNewPassword(memberful: MemberfulStatus | null, sso: SsoStatus | null): string {
+  if (memberful?.connected && sso?.connected) return " Changing it disconnects Memberful and single sign-on.";
+  if (memberful?.connected) return " Changing it disconnects Memberful.";
+  return sso?.connected ? " Changing it disconnects single sign-on." : "";
+}
+
 /**
  * Your profile: how to install Ember, for the browsers that get steps, then your avatar, which a photo
  * picked saves at once, showing it meanwhile, with the notice "It may take up to 30 minutes to change
- * everywhere.", and Remove avatar takes away, then your name, email address, a new password, unless
- * Memberful signs you in without one, your current password while you have one, which changing your
- * email address or password takes, and your
- * bio, which Save changes saves with the notice "✓", keeping the page, then, while members sign in with
+ * everywhere.", and Remove avatar takes away, then your name, username, email address, a new password,
+ * unless Memberful or single sign-on signs you in without one, your current password while you have
+ * one, which changing your email address or password takes, and your
+ * bio, which Save changes saves with the notice "✓", keeping the page, then your mood, an emoji and a
+ * few words beside your name, which Save mood wears and Clear takes off, and which comes off by itself
+ * when the Clear-at menu says, then the workspace's profile fields its administrators asked, an input
+ * each, or a menu of its choices for one that has them, saved with the rest, then, while members sign in with
  * Memberful, connecting your Memberful account, or the one you've connected, which Disconnect Memberful
- * unlinks with the notice "Your Memberful account is disconnected.", then, while Ember AI is on, how much @ember thinks and
- * how long it answers you, then your notification level in each of your rooms and DMs, then a sign-in
- * link for you, a new one each time the page loads or saves, and Log out in the top bar. Go Back
- * returns to the page it was opened from. Your avatar, name and bio reach everyone's open pages at
- * once, through the workspace socket, as they reach the rail.
+ * unlinks with the notice "Your Memberful account is disconnected.", then, likewise, while members sign
+ * in with single sign-on, connecting your account at the provider, then, while Ember AI is on, how much
+ * @ember thinks and how long it answers you, then Do not disturb, which hushes your push notifications
+ * until a time you pick, then, while huddles are on, which of a huddle's sounds you
+ * hear, then your notification level in each of your rooms and DMs, then a sign-in
+ * link for you, a new one each time the page loads or saves, then Delete my account, and Log out in
+ * the top bar. Go Back returns to the page it was opened from. Your avatar, name, username, bio and mood
+ * reach everyone's open pages at once, through the workspace socket, as they reach the rail.
  */
-export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Props) {
+export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndChanged, huddleSounds, askForHuddleSounds, onSignOut, onDeleteAccount, onFailed }: Props) {
   const [fields, setFields] = useState<Fields | null>(null);
   /** The profile as the page last loaded or saved it. */
   const saved = useRef<Fields | null>(null);
+  /** The workspace's fields, in the order the profile shows them, or null until it has loaded. */
+  const [askedFields, setAskedFields] = useState<ProfileFieldEntry[] | null>(null);
+  /** What's typed for each of them. */
+  const [fieldValues, setFieldValues] = useState<FieldValues | null>(null);
+  /** What was saved for each of them, as the page last loaded or saved it. */
+  const savedFieldValues = useRef<FieldValues>({});
   const [picture, setPicture] = useState<Picture | null>(null);
   /** The address of the photo picked, shown while it saves. */
   const [picked, setPicked] = useState<string | null>(null);
@@ -125,6 +197,12 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
   /** Whether you have a password, which the form then asks for to change your email address or password. */
   const [hasPassword, setHasPassword] = useState(false);
   /**
+   * Your name as the profile last loaded or saved it, which Delete my account asks someone without a
+   * password to type, as the server has it: a name saved while the workspace socket is down reaches
+   * `me` only once it's back. A photo's answer, which can arrive after a save, has the name from before.
+   */
+  const [savedName, setSavedName] = useState(me.name);
+  /**
    * Whether you have an email address saved, which signing in with your password takes, so disconnecting
    * Memberful needs it: from loading and saving the profile alone, which change it, so a photo's answer
    * arriving late doesn't take it away.
@@ -132,18 +210,40 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
   const [hasEmailAddress, setHasEmailAddress] = useState(false);
   /** The Memberful account you've connected, or none to connect yet, or null while there's nothing to show. */
   const [memberful, setMemberful] = useState<MemberfulStatus | null>(null);
-  /** Whether you need Memberful to sign in while it's members only, unlike administrators and the people they invite. */
+  /** The account at the single sign-on provider you've connected, or none to connect yet, or null while there's nothing to show. */
+  const [sso, setSso] = useState<SsoStatus | null>(null);
+  /** Whether you need Memberful, or single sign-on, to sign in while it's the only way in, unlike administrators and the people they invite. */
   const [membershipNeeded, setMembershipNeeded] = useState(true);
   /** Which model @ember answers you with, how much it thinks and how long its answers are, or null while Ember AI is off. */
   const [assistant, setAssistant] = useState<Profile["assistant"]>(null);
-  /** The connected apps you can sign in to yourself, each with your sign-in to it, if you've made one. */
+/** The connected apps you can sign in to yourself, each with your sign-in to it, if you've made one. */
   const [apps, setApps] = useState<Profile["apps"]>([]);
   const [outsideAi, setOutsideAi] = useState<Profile["outsideAi"]>(null);
+  /** The mood you wear beside your name, or null while you wear none. */
+  const [mood, setMood] = useState<Profile["mood"]>(null);
+  /**
+   * The mood a save of the mood section has sent, and nothing once its save has answered or an answer
+   * has said it: an answer that read the profile before the save says the mood it read, and would take
+   * the save off again, so while the save is out, answers saying another mood are held off, until one
+   * says the mood that was sent, which has the save echoed back in it, and answers after it that
+   * differ are changes made since the save, as another tab's newer save, and show.
+   */
+  const savedMood = useRef<PersonMood | null | undefined>(undefined);
+  /**
+   * When this page last began to save a mood, or 0 while it never has: an answer that began before then
+   * read the profile before the save, whatever long after the save it lands in, as a photo's upload
+   * can, and says the mood it read, which would take the save off again. Its mood is held off; the
+   * save's own answer has said the mood, and answers that began after the save show what they read.
+   */
+  const moodSaveBegun = useRef(0);
   const [saving, setSaving] = useState(false);
   const passwordInput = useRef<HTMLInputElement>(null);
   const currentPasswordInput = useRef<HTMLInputElement>(null);
-  /** Whether you've disconnected your Memberful account here, since when no answer shows it connected: connecting one reloads the page. */
+  /** Whether you've disconnected your Memberful account here, with Disconnect or a new password, since when no answer shows it connected: connecting one reloads the page. */
   const disconnectedMemberful = useRef(false);
+  /** Likewise for your account at the single sign-on provider. */
+  const disconnectedSso = useRef(false);
+  const account = useAccount();
   const people = useContext(PeopleContext);
   const back = useBackPath();
   const flash = useFlash();
@@ -153,19 +253,30 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
 
   useEffect(() => {
     let stopped = false;
+    // What the page reads of the hush shows only if nothing was heard since it asked, as the account's
+    // answers do, since the profile may have read before a change made meanwhile.
+    const askedAt = Date.now();
+    const heard = askForDnd();
     fetchProfile().then(
       (answer) => {
         if (stopped) return;
         saved.current = fieldsOf(answer.profile);
         setFields(saved.current);
+        savedFieldValues.current = fieldValuesOf(answer.profile.fields);
+        setFieldValues(savedFieldValues.current);
+        setAskedFields(answer.profile.fields ?? []);
+        setSavedName(answer.profile.name);
         setHasEmailAddress(answer.profile.emailAddress !== null);
-        showAnswer(answer);
+        showAnswer(answer, askedAt);
         // Only from here and the Ember AI section's own saves, as a save of the profile or a photo can
         // answer after a change there, with your model and levels from before it.
         setAssistant(answer.profile.assistant);
         // The same goes for the Apps section, which signing out there changes.
         setApps(answer.profile.apps);
         setOutsideAi(answer.profile.outsideAi);
+        // The hush too, which the section saves, and the rail shows by its crescent, unless one was
+        // heard while the page was loading, which may have read before it did.
+        heard(answer.profile.dndUntil ?? null);
       },
       (error: unknown) => {
         // A page left before its profile loads only reports a session that's ended, which goes to sign in.
@@ -173,17 +284,18 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
       },
     );
     return () => void (stopped = true);
-  }, [onFailed]);
+  }, [askForDnd, onFailed, onDndChanged]);
 
   // The picked photo's address is let go of once the saved one takes its place.
   useEffect(() => () => void (picked && URL.revokeObjectURL(picked)), [picked]);
 
   /**
-   * Shows your avatar, whether you have a password, where you stand with Memberful and whether you need
+   * Shows your avatar, whether you have a password, where you stand with Memberful and single sign-on and whether you need
    * it, and a new sign-in link, as an answer has them. An answer can arrive after a later one, as a
-   * profile's save can after a photo's, and the later avatar stays then.
+   * profile's save can after a photo's, and the later avatar stays then. `askedAt` says when its request
+   * began, against which a mood save this page began is held.
    */
-  function showAnswer({ profile, transferId }: ProfileAnswer) {
+  function showAnswer({ profile, transferId }: ProfileAnswer, askedAt: number = Date.now()) {
     const answered = { avatarUrl: profile.avatarUrl, avatar: profile.avatar };
     setPicture((shown) => (shown && avatarVersionOf(shown.avatarUrl) > avatarVersionOf(answered.avatarUrl) ? shown : answered));
     // Nothing takes a password away, so an answer arriving late doesn't hide the field.
@@ -192,7 +304,17 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
     // arriving late doesn't show it connected again, and shows what the Worker does for one disconnected.
     const { memberful } = profile;
     setMemberful(disconnectedMemberful.current && memberful?.connected ? (memberful.membersOnly ? { membersOnly: true, connected: null } : null) : memberful);
+    const { sso } = profile;
+    setSso(disconnectedSso.current && sso?.connected ? (sso.ssoOnly ? { ...sso, connected: null } : null) : sso);
     setMembershipNeeded(profile.membershipNeeded);
+    // While a mood this page has sent is out for its save's answer, an answer saying another mood may
+    // be one that read the profile before the save, and is held off; one saying the mood that was sent
+    // has the save echoed back in it, so answers after it that differ are changes made since, as
+    // another tab's newer save, and show.
+    if (savedMood.current === undefined || sameMood(profile.mood, savedMood.current)) {
+      savedMood.current = undefined;
+      if (askedAt >= moodSaveBegun.current) setMood(profile.mood);
+    }
     setTransferId(transferId);
   }
 
@@ -203,22 +325,50 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
     flash("notice", MEMBERFUL_DISCONNECTED_NOTICE);
   }
 
+  /** Shows your mood as a save of it or its clearing answered it, with the notice. */
+  function answered(answer: ProfileAnswer) {
+    // The save's own answer says the profile as the save left it, so the wait it armed is over.
+    savedMood.current = undefined;
+    showAnswer(answer, moodSaveBegun.current);
+    flash("notice", "✓");
+  }
+
+  /** Arms the wait with the mood `worn` a save of the mood section has sent, or none, that answers before its own are held against, and says when it began, so answers that read before it are held off however late they come. */
+  function savingMood(worn: PersonMood | null) {
+    moodSaveBegun.current = Date.now();
+    savedMood.current = worn;
+  }
+
+  /** Says why saving the mood failed, letting answers through again, since nothing was saved for them to take off. */
+  function failedMood(error: unknown) {
+    savedMood.current = undefined;
+    moodSaveBegun.current = 0;
+    onFailed(error);
+  }
+  /** Shows your profile as disconnecting your account at the single sign-on provider answered it, with the notice. */
+  function disconnectedFromSso(answer: ProfileAnswer) {
+    disconnectedSso.current = true;
+    showAnswer(answer);
+    flash("notice", SSO_DISCONNECTED_NOTICE);
+  }
+
   /** Saves `file` as your avatar, once a photo is picked. */
   const saveAvatar = (file: File) => {
     if (file.size > MAX_AVATAR_SIZE) return flash("alert", AVATAR_TOO_LARGE);
     setPicked(URL.createObjectURL(file));
-    savePicture(avatarVariantOf(file).then((variant) => changeAvatar({ file, variant })), AVATAR_CHANGED);
+    const askedAt = Date.now();
+    savePicture(avatarVariantOf(file).then((variant) => changeAvatar({ file, variant })), AVATAR_CHANGED, askedAt);
   };
 
-  /** Shows your avatar as `change` saves it, flashing `notice` once it has. */
-  function savePicture(change: Promise<ProfileAnswer>, notice?: string) {
+  /** Shows your avatar as `change` saves it, flashing `notice` once it has. `askedAt` says when the save's request began. */
+  function savePicture(change: Promise<ProfileAnswer>, notice?: string, askedAt: number = Date.now()) {
     setSavingPicture(true);
     change.then(
       (answer) => {
         if (!mounted.current) return;
         setSavingPicture(false);
         setPicked(null);
-        showAnswer(answer);
+        showAnswer(answer, askedAt);
         if (notice) flash("notice", notice);
       },
       (error: unknown) => {
@@ -233,25 +383,42 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
   const change = (field: keyof Fields) => (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) =>
     setFields((fields) => fields && { ...fields, [field]: event.target.value });
 
+  const changeFieldValue = (id: string) => (event: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+    setFieldValues((values) => values && { ...values, [id]: event.target.value });
+
   const save = (event: FormEvent) => {
     event.preventDefault();
-    if (!fields || !saved.current || saving) return;
+    if (!fields || !saved.current || !fieldValues || saving) return;
     setSaving(true);
     const sent = fields;
+    const sentFieldValues = fieldValues;
     const password = passwordInput.current?.value ?? "";
     const currentPassword = currentPasswordInput.current?.value ?? "";
-    keepingThisBrowsersPush(changesOf(saved.current, sent, password, currentPassword)).then(changeProfile).then(
+    const asked = fieldChangesOf(savedFieldValues.current, sentFieldValues);
+    const askedAt = Date.now();
+    keepingThisBrowsersPush({ ...changesOf(saved.current, sent, password, currentPassword), ...(asked && { fieldValues: asked }) }).then(changeProfile).then(
       (answer) => {
         if (!mounted.current) return;
         setSaving(false);
         const now = fieldsOf(answer.profile);
         saved.current = now;
+        setSavedName(answer.profile.name);
         setFields((fields) => fields && settled(fields, sent, now));
+        const nowFieldValues = fieldValuesOf(answer.profile.fields);
+        savedFieldValues.current = nowFieldValues;
+        setFieldValues((values) => values && settledFieldValues(values, sentFieldValues, nowFieldValues));
+        setAskedFields(answer.profile.fields ?? []);
         setHasEmailAddress(answer.profile.emailAddress !== null);
         // The passwords leave their fields, unless others were typed meanwhile.
         if (passwordInput.current?.value === password) passwordInput.current.value = "";
         if (currentPasswordInput.current?.value === currentPassword) currentPasswordInput.current.value = "";
-        showAnswer(answer);
+        // A new password disconnects the accounts elsewhere, as Disconnect does, while your email address
+        // lets it sign you in, so an answer arriving late, as a photo's can, doesn't show them connected again.
+        if (password !== "") {
+          if (!answer.profile.memberful?.connected) disconnectedMemberful.current = true;
+          if (!answer.profile.sso?.connected) disconnectedSso.current = true;
+        }
+        showAnswer(answer, askedAt);
         flash("notice", "✓");
       },
       (error: unknown) => {
@@ -265,8 +432,12 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
   // Another tab's change reaches the people directory, whose address is the later one then.
   const listed = avatarUrlOf(people, me);
   const avatarUrl = picture && avatarVersionOf(picture.avatarUrl) >= avatarVersionOf(listed) ? picture.avatarUrl : listed;
-  // Someone Memberful signs in who has no password is given none, as the Worker refuses one: Memberful is their way in.
-  const signsInWithMemberfulAlone = !hasPassword && Boolean(memberful?.connected);
+  // Someone Memberful or single sign-on signs in who has no password is given none, as the Worker refuses one: it's their way in.
+  const signsInElsewhereAlone = !hasPassword && Boolean(memberful?.connected || sso?.connected);
+  // A way in signs nobody in while the other is the only way in without it, as the Worker has it (`rulesOf`).
+  const ssoName = sso?.name ?? "single sign-on";
+  const memberfulClosed = account.ssoSignIn && !account.memberfulSignIn ? `Signing in with Memberful is off while members sign in with ${ssoName}.` : undefined;
+  const ssoClosed = account.memberfulSignIn && !account.ssoSignIn ? `Signing in with ${ssoName} is off while members sign in with Memberful.` : undefined;
 
   const logOut = (
     <button type="button" onClick={() => leave(onSignOut)} className={HEADER_TEXT_BUTTON}>
@@ -306,6 +477,7 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
               className={FIELD_INPUT}
             />
           </Field>
+          <UsernameField value={fields?.username ?? ""} onChange={(username) => setFields((fields) => fields && { ...fields, username })} disabled={!fields} />
           <Field id="user_email_address" label="Email address" translation="email_address">
             <Input
               id="user_email_address"
@@ -319,7 +491,7 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
               className={FIELD_INPUT}
             />
           </Field>
-          {!signsInWithMemberfulAlone && (
+          {!signsInElsewhereAlone && (
             <Field id="user_password" label="New password" translation="update_password">
               {/* Uncontrolled, so what's typed never reaches its `value` attribute, where custom CSS could read it. */}
               <Input
@@ -335,10 +507,10 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
                 className={FIELD_INPUT}
               />
               <p id="profile-password-help" className="text-[0.8em] text-muted-foreground">
-                {/* Someone who signed in with just a name has no password, nor has someone who joined with Memberful once it no longer signs them in. */}
+                {/* Someone who signed in with just a name has no password, nor has someone who joined with Memberful or single sign-on once it no longer signs them in. */}
                 {fields && !hasPassword ? "Leave blank to keep signing in without a password." : "Leave blank to keep your current password."}
                 {/* As the one it replaces connected it, while it's saved with an email address to sign in by. */}
-                {fields && hasPassword && memberful?.connected && fields.emailAddress.trim() !== "" && " A new one disconnects your Memberful account."}
+                {fields && hasPassword && fields.emailAddress.trim() !== "" && disconnectsWithNewPassword(memberful, sso)}
               </p>
             </Field>
           )}
@@ -374,8 +546,46 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
               className={cn("w-full border placeholder:text-muted-foreground disabled:opacity-50", FIELD_INPUT, "resize-y")}
             />
           </Field>
+          {/* The workspace's fields, an input each, or a menu of its choices for one that has them. */}
+          {askedFields?.map((asked) => {
+            // What they saved for it, which a menu shows even when it's no longer one of the choices.
+            const kept = fieldValues?.[asked.id] ?? "";
+            return (
+              <Field key={asked.id} id={`user_field_${asked.id}`} label={asked.name}>
+                {asked.options === null ? (
+                  <Input
+                    id={`user_field_${asked.id}`}
+                    autoComplete="off"
+                    maxLength={MAX_PROFILE_FIELD_VALUE_LENGTH}
+                    disabled={!fieldValues}
+                    value={fieldValues?.[asked.id] ?? ""}
+                    onChange={changeFieldValue(asked.id)}
+                    className={FIELD_INPUT}
+                  />
+                ) : (
+                  <select
+                    id={`user_field_${asked.id}`}
+                    disabled={!fieldValues}
+                    value={fieldValues?.[asked.id] ?? ""}
+                    onChange={changeFieldValue(asked.id)}
+                    className={SELECT}
+                  >
+                    <option value="">Not set</option>
+                    {asked.options.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                    {/* The Worker keeps an answer that's no longer a choice until one of the choices now takes its place, so it shows, and Not set can take it away. */}
+                    {kept !== "" && !asked.options.includes(kept) && <option value={kept}>{kept}</option>}
+                  </select>
+                )}
+              </Field>
+            );
+          })}
           <SubmitButton disabled={!fields || saving}>Save changes</SubmitButton>
         </form>
+        {fields !== null && <MoodEditor mood={mood} onSaving={savingMood} onSaved={answered} onFailed={failedMood} />}
         {memberful && (
           <MemberfulConnection
             connected={memberful.connected}
@@ -383,15 +593,35 @@ export function ProfilePage({ me, rooms, askForRoom, onSignOut, onFailed }: Prop
             hasPassword={hasPassword}
             hasEmailAddress={hasEmailAddress}
             membershipNeeded={membershipNeeded}
+            signsInOtherwise={!hasPassword && sso?.connected ? MEMBERFUL_WITH_SSO : undefined}
+            closed={memberfulClosed}
             onDisconnected={disconnected}
+            onFailed={onFailed}
+          />
+        )}
+        {sso && (
+          <SingleSignOnConnection
+            name={sso.name}
+            connected={sso.connected}
+            ssoOnly={sso.ssoOnly}
+            hasPassword={hasPassword}
+            hasEmailAddress={hasEmailAddress}
+            membershipNeeded={membershipNeeded}
+            signsInOtherwise={!hasPassword && memberful?.connected ? SSO_WITH_MEMBERFUL : undefined}
+            closed={ssoClosed}
+            onDisconnected={disconnectedFromSso}
             onFailed={onFailed}
           />
         )}
         {assistant && <AnswerLevels assistant={assistant} onChanged={setAssistant} onFailed={onFailed} />}
         {apps.length > 0 && <YourApps apps={apps} onChanged={setApps} onFailed={onFailed} />}
         {outsideAi && <YourOutsideAi connections={outsideAi} onChanged={setOutsideAi} onFailed={onFailed} />}
+        <DoNotDisturb dndUntil={dndUntil} askForDnd={askForDnd} onChanged={onDndChanged} onFailed={onFailed} />
+        {huddleSounds && <HuddleSoundSwitches sounds={huddleSounds} askForSounds={askForHuddleSounds} onFailed={onFailed} />}
         {rooms && <ConversationNotifications me={me} rooms={rooms} askForRoom={askForRoom} onFailed={onFailed} />}
+        <BlockedPeople />
         {transferId && <SignInLink transferId={transferId} mine />}
+        {fields && <DeleteAccount name={savedName} hasPassword={hasPassword} onDelete={onDeleteAccount} onFailed={onFailed} />}
       </Panel>
     </SettingsPage>
   );

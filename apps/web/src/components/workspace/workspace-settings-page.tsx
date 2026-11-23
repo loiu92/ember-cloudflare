@@ -39,23 +39,29 @@ import { AgentList } from "./agent-list";
 import { AppList } from "./app-list";
 import { AssistantSettings } from "./assistant-settings";
 import { AssistantSetup } from "./assistant-setup";
+import { BlockedWordsSettings } from "./blocked-words-settings";
 import { CustomDomainSettings } from "./custom-domain-settings";
 import { EmberVersion } from "./ember-version";
 import { EmailSettings, sendsEmail } from "./email-settings";
 import { EmailSetup } from "./email-setup";
-import { HuddlesSettings } from "./huddles-settings";
+import { HuddleRelay, HuddlesSettings, HuddleSwitches } from "./huddles-settings";
 import { HuddlesSetup } from "./huddles-setup";
 import { InviteByEmail } from "./invite-by-email";
 import { InviteLink } from "./invite-link";
 import { MemberfulSetup } from "./memberful-setup";
 import { OutsideAiSettings } from "./outside-ai-settings";
 import { PeopleList } from "./people-list";
+import { ReportsList } from "./reports-list";
 import { PicturePicker } from "./picture-picker";
+import { ProfileFieldsSettings } from "./profile-fields-settings";
+import { RelaySetup } from "./relay-setup";
 import { RoomOrder } from "./room-order";
-import { workspaceSectionOf } from "./settings-navigation";
+import { SettingsLayout, workspaceSectionOf } from "./settings-navigation";
 import { CHANGES_SAVED, PageHeading, Panel, SECTION_HEADING, SettingsPage, TITLE, TITLE_LINK } from "./settings-page";
+import { SsoSetup } from "./sso-setup";
 import { TurnstileSettings } from "./turnstile-settings";
 import { TurnstileSetup } from "./turnstile-setup";
+import { UserGroups } from "./user-groups-settings";
 import { HowPeopleJoin, WaysToJoin } from "./ways-to-join";
 
 interface Props {
@@ -90,30 +96,36 @@ interface Props {
 }
 
 /**
- * Workspace settings, in six sections, of which the address's fragment shows one, all of them staying
+ * Workspace settings, in seven sections, of which the address's fragment shows one, all of them staying
  * drawn so what's typed in one waits there while another shows:
  *
- * - General, where administrators change the workspace's icon, which one picked saves at once, showing it
- *   meanwhile, and Remove icon takes away, then rename the workspace, give it a tagline, and show or hide
- *   the translation buttons, which Save changes saves together, and see which release of Ember this is,
- *   and when a newer one is out, which Check for updates asks GitHub again. Members see its icon, name
- *   and tagline.
+ * - General, where administrators first see which release of Ember this is, and when a newer one is out,
+ *   which Check for updates asks GitHub again, then change the workspace's icon, which one picked saves
+ *   at once, showing it meanwhile, and Remove icon takes away, then rename the workspace, give it a
+ *   tagline, and show or hide the translation buttons, which Save changes saves together. Members see
+ *   its icon, name and tagline.
  *   The rail's icons are in Custom styles (`NavigationIconSettings`), where the project's owner moved
  *   them.
  * - Rooms and permissions: New room, which members don't get while only administrators can create
  *   rooms, then for administrators, the switch that says so, and the rooms' order for everyone, each
  *   linking to its settings.
- * - Membership: for administrators, who can join, with switches for Open, the join link, which they can
- *   regenerate, and Memberful, how Ember sends email, and whether Cloudflare Turnstile checks who joins,
+ * - Membership: for administrators, the Reports list first, then who can join, with switches for Open,
+ *   the join link, which they can regenerate, Memberful and single sign-on, which Set up single sign-on
+ *   sets up, how Ember sends email, and whether Cloudflare Turnstile checks who joins,
  *   or for members, the links that let people in, then the administrators and members, whom
  *   administrators can make administrators or members and remove.
+ * - Profile fields: for administrators, the fields everyone's profile asks, which people answer on
+ *   their own profile.
+ * - User groups: for administrators, the groups of people a mention stands for, which they name, fill
+ *   and delete.
  * - Domain settings: for administrators, the custom domain Ember answers at.
  * - AI assistant: for administrators, whether Ember's AI agents run on models through Cloudflare AI
  *   Gateway, which Set up Ember AI connects, and while they do, the agents, @ember first, each linking to
  *   its page, and New agent. Then whether AI apps, such as Claude, may connect to Ember as the people in
  *   it (Outside AI).
  * - Huddles: for administrators, whether huddles are on, through the Realtime SFU app whose keys Set up
- *   huddles takes.
+ *   huddles takes, and while they are, whether people may turn their cameras on in them and share their
+ *   screens, and whether huddles have a relay, by the TURN key Set up the relay takes.
  */
 export function WorkspaceSettingsPage({
   me,
@@ -131,6 +143,9 @@ export function WorkspaceSettingsPage({
   onCheckForUpdates,
 }: Props) {
   const [settings, setSettings] = useState<WorkspaceSettings | null>(null);
+  // How many reports are open, as the sidebar last heard, and how many times it has heard, which the Reports list loads again on.
+  const openReports = useContext(SettingsLayout)?.openReports ?? 0;
+  const reportsHeard = useContext(SettingsLayout)?.reportsHeard ?? 0;
   // What's typed in Workspace name and Tagline, or null for either while it's as the workspace has it,
   // when the field follows the workspace socket, so that saving one never puts back what another tab
   // changed in the other.
@@ -152,6 +167,9 @@ export function WorkspaceSettingsPage({
   const [memberfulSetup, setMemberfulSetup] = useState<{ then?: () => void } | null>(null);
   const [settingUpAssistant, setSettingUpAssistant] = useState(false);
   const [settingUpHuddles, setSettingUpHuddles] = useState(false);
+  // Set up single sign-on, while it's open, with what to go on to once it closes with the provider saved.
+  const [ssoSetup, setSsoSetup] = useState<{ then?: () => void } | null>(null);
+  const [settingUpRelay, setSettingUpRelay] = useState(false);
   const account = useAccount();
   const name = typedName ?? account.name;
   const tagline = typedTagline ?? account.tagline;
@@ -217,6 +235,22 @@ export function WorkspaceSettingsPage({
       (error: unknown) => (mounted.current || isSignedOut(error)) && onFailed(error),
     );
   }, [memberfulOn, memberfulUnknown, mounted, onFailed]);
+
+  // Single sign-on turned on elsewhere, by an administrator who set its provider up there, likewise: the
+  // provider is loaded again, for administrators, whom alone the settings tell of it, rather than the card
+  // saying none is set up.
+  const ssoOn = account.ssoJoin;
+  const ssoWasOn = useRef(ssoOn);
+  const ssoUnknown = settings?.canAdminister === true && settings.sso === null;
+  useEffect(() => {
+    const turnedOn = ssoOn && !ssoWasOn.current;
+    ssoWasOn.current = ssoOn;
+    if (!turnedOn || !ssoUnknown) return;
+    fetchWorkspaceSettings().then(
+      ({ sso }) => mounted.current && setSettings((settings) => settings && { ...settings, sso }),
+      (error: unknown) => (mounted.current || isSignedOut(error)) && onFailed(error),
+    );
+  }, [ssoOn, ssoUnknown, mounted, onFailed]);
 
   // The name, the tagline and, if it was moved, the translation buttons' switch, sent together.
   const save = (event: FormEvent) => {
@@ -311,6 +345,22 @@ export function WorkspaceSettingsPage({
       },
     );
   };
+  /** Saves the words and phrases Blocked words keeps out, flashing a notice once they're saved. */
+  const saveBlockedWords = (blockedWords: string[], settled: (saved: boolean) => void) => {
+    changeAccount({ blockedWords }).then(
+      () => {
+        if (!mounted.current) return;
+        setSettings((settings) => settings && { ...settings, blockedWords });
+        settled(true);
+        flash("notice", CHANGES_SAVED);
+      },
+      (error: unknown) => {
+        if (!mounted.current && !isSignedOut(error)) return;
+        settled(false);
+        onFailed(error);
+      },
+    );
+  };
   const switchRoomCreation = (restrict: boolean) => {
     if (restrictingCreation !== null) return;
     setRestrictingCreation(restrict);
@@ -339,6 +389,8 @@ export function WorkspaceSettingsPage({
   const showOutsideAi = (outsideAi: boolean) => setSettings((settings) => settings && { ...settings, outsideAi });
   /** Shows huddles as Set up huddles, or turning them off, changes them, which only workspace settings shows. */
   const showHuddles = (huddles: WorkspaceSettings["huddles"]) => setSettings((settings) => settings && { ...settings, huddles });
+  /** Shows the single sign-on provider as Set up single sign-on, or removing it, changes it, which only workspace settings shows. */
+  const showSso = (sso: WorkspaceSettings["sso"]) => setSettings((settings) => settings && { ...settings, sso });
 
   // Regenerate join link: no confirmation first, and no notice after.
   const regenerate = () => {
@@ -408,6 +460,8 @@ export function WorkspaceSettingsPage({
         {settings &&
           (settings.canAdminister ? (
             <>
+              {/* First, so that administrators don't miss a newer release, as the project's owner asked (2026-11-17). */}
+              <EmberVersion check={release} onCheckForUpdates={onCheckForUpdates} onFailed={onFailed} />
               <PicturePicker
                 id="account_logo"
                 src={pickedLogo ?? account.logo ?? STOCK_LOGO}
@@ -468,7 +522,6 @@ export function WorkspaceSettingsPage({
                   Save changes
                 </SubmitButton>
               </form>
-              <EmberVersion check={release} onCheckForUpdates={onCheckForUpdates} onFailed={onFailed} />
             </>
           ) : (
             <>
@@ -520,6 +573,8 @@ export function WorkspaceSettingsPage({
           <div className="min-w-0">
             {settings.canAdminister ? (
               <div className="flex flex-col gap-6">
+                <ReportsList meId={me.id} shown={section === "membership-settings"} open={openReports} heard={reportsHeard} onFailed={onFailed} />
+                <BlockedWordsSettings words={settings.blockedWords} saveWords={saveBlockedWords} />
                 <WaysToJoin
                   settings={settings}
                   saveSwitch={saveSwitch}
@@ -527,6 +582,9 @@ export function WorkspaceSettingsPage({
                   onSetUpEmail={setUpEmail}
                   onSetUpTurnstile={() => setSettingUpTurnstile(true)}
                   onSetUpMemberful={(then) => setMemberfulSetup({ then })}
+                  onSetUpSso={(then) => setSsoSetup({ then })}
+                  onSsoForgotten={showSso}
+                  onFailed={onFailed}
                   joinLink={settings.joinCode !== null && <InviteLink joinCode={settings.joinCode} onRegenerate={regenerate} regenerating={regenerating} />}
                 />
                 {memberfulSetup && (
@@ -537,6 +595,17 @@ export function WorkspaceSettingsPage({
                       memberfulSetup.then?.();
                     }}
                     onClose={() => setMemberfulSetup(null)}
+                    onFailed={onFailed}
+                  />
+                )}
+                {ssoSetup && (
+                  <SsoSetup
+                    sso={settings.sso}
+                    onSaved={showSso}
+                    onClose={(saved) => {
+                      setSsoSetup(null);
+                      if (saved) ssoSetup.then?.();
+                    }}
                     onFailed={onFailed}
                   />
                 )}
@@ -589,6 +658,23 @@ export function WorkspaceSettingsPage({
             />
           </div>
         )}
+      </Panel>
+      <Panel id="profile-fields-settings" hidden={section !== "profile-fields-settings"} aria-labelledby="profile-fields-heading" className="flex flex-col gap-6">
+        <PageHeading id="profile-fields-heading" title="Profile fields" className={SECTION_HEADING}>
+          Ask everyone the same things on their profile, such as their title or pronouns.
+        </PageHeading>
+        {me.administrator ? <ProfileFieldsSettings onFailed={onFailed} /> : <p className="text-muted-foreground">Community admins manage profile fields.</p>}
+      </Panel>
+      <Panel id="user-groups-settings" hidden={section !== "user-groups-settings"} aria-labelledby="user-groups-settings-heading" className="flex flex-col gap-6">
+        <PageHeading id="user-groups-settings-heading" title="User groups" className={SECTION_HEADING}>
+          Name groups of people a mention stands for.
+        </PageHeading>
+        {settings &&
+          (settings.canAdminister ? (
+            <UserGroups onSaved={() => flash("notice", CHANGES_SAVED)} reloadDirectory={listPeople} onFailed={onFailed} />
+          ) : (
+            <p className="text-muted-foreground">Community admins manage user groups.</p>
+          ))}
       </Panel>
       <Panel id="domain-settings" hidden={section !== "domain-settings"} aria-labelledby="domain-settings-heading" className="flex flex-col gap-6">
         <PageHeading id="domain-settings-heading" title="Domain settings" className={SECTION_HEADING}>
@@ -645,6 +731,17 @@ export function WorkspaceSettingsPage({
           (settings.canAdminister ? (
             <>
               <HuddlesSettings huddles={settings.huddles} onSetUp={() => setSettingUpHuddles(true)} onStopped={() => showHuddles(null)} onFailed={onFailed} />
+              {settings.huddles !== null && <HuddleSwitches saveSwitch={saveSwitch} />}
+              {settings.huddles !== null && <HuddleRelay relayKeyId={settings.huddles.relayKeyId} onSetUp={() => setSettingUpRelay(true)} onStopped={showHuddles} onFailed={onFailed} />}
+              {settingUpRelay && settings.huddles !== null && (
+                <RelaySetup
+                  relayKeyId={settings.huddles.relayKeyId}
+                  deployedAccountId={settings.cloudflareAccountId}
+                  onSaved={showHuddles}
+                  onClose={() => setSettingUpRelay(false)}
+                  onFailed={onFailed}
+                />
+              )}
               {settingUpHuddles && (
                 <HuddlesSetup
                   huddles={settings.huddles}

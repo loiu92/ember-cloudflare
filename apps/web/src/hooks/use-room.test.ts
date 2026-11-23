@@ -1,5 +1,6 @@
-import { CloseCode, MAX_CHECKED_MESSAGES, MAX_MESSAGE_HTML_LENGTH, MAX_MESSAGE_LENGTH, MESSAGE_TOO_LONG, type Message, type ServerFrame, type User } from "@ember/protocol";
+import { CloseCode, MAX_CHECKED_MESSAGES, MAX_MESSAGE_HTML_LENGTH, MAX_MESSAGE_LENGTH, MESSAGE_TOO_LONG, type LinkPreview, type Message, type ServerFrame, type User } from "@ember/protocol";
 import { act, cleanup, renderHook } from "@testing-library/react";
+import type { AddPreview } from "@/components/workspace/composer";
 import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { takeBack } from "@/lib/outbox";
@@ -125,7 +126,7 @@ afterEach(() => {
 describe("Catch up after a reconnect", () => {
   it("opens the room's socket, which the session cookie signs in", () => {
     joinGeneral({ connect: false });
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5");
   });
 
   it("is connecting until the room says welcome", () => {
@@ -294,13 +295,13 @@ describe("Catch up after a reconnect", () => {
     joinGeneral();
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&since=0");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&since=0");
     socket().open();
     socket().receive({ type: "resumed", you: ada, messages: [message("m1")], deletedIds: [], present: [ada], seq: 3 });
     socket().receive({ type: "message.deleted", messageId: "m1", seq: 4 });
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&since=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&since=4");
   });
 
   it("names the change before one the room never announced, so connecting again brings it", () => {
@@ -311,7 +312,7 @@ describe("Catch up after a reconnect", () => {
     socket().receive({ type: "message.deleted", messageId: "m1", seq: 4 });
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&since=1");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&since=1");
   });
 
   it("names no change until the room has let it in, nor in the next room it opens", () => {
@@ -319,12 +320,12 @@ describe("Catch up after a reconnect", () => {
     socket().open();
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5");
     socket().open();
     socket().receive({ type: "welcome", you: ada, messages: [], present: [ada], hasMore: false, hasNewer: false, around: null, seq: 7 });
 
     rerender({ roomId: "random" });
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/random/socket?visible=1&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/random/socket?visible=1&protocol=5");
   });
 
   it("catches up on what changed while it was away, keeping what's loaded, and asks about a message it doesn't confirm", () => {
@@ -444,7 +445,7 @@ describe("Leave a room with messages waiting", () => {
   it("sends what was written while the room was away once it's back, after the room is left, over a socket of its own", async () => {
     const [written] = await leaveWhileAway("Written while away");
     const [outbox] = outboxSockets();
-    expect(outbox!.url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=4");
+    expect(outbox!.url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=5");
     outbox!.open();
     outbox!.receive(welcome());
     expect(outbox!.sent).toEqual([{ type: "message.create", clientMessageId: written!.clientMessageId, body: "Written while away" }]);
@@ -580,7 +581,7 @@ describe("Open a room", () => {
 
   it("opens it as a hidden tab's, so that the room reads nothing for it until the room shows in a tab that's shown", async () => {
     openRoomSocketAhead("/rooms/general");
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=5");
     socket().open();
     socket().receive(welcome());
     expect(socket().sent).toEqual([]);
@@ -595,7 +596,7 @@ describe("Open a room", () => {
   it("takes one opened ahead at a message's permalink as it opens there", () => {
     openRoomSocketAhead("/rooms/general/@m1");
     renderHook(() => useRoom("general", ada, () => {}, "m1"));
-    expect(FakeSocket.all.map((s) => s.url)).toEqual(["ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=4&around=m1"]);
+    expect(FakeSocket.all.map((s) => s.url)).toEqual(["ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=5&around=m1"]);
   });
 
   it("opens none ahead for a page that shows no room", () => {
@@ -795,24 +796,49 @@ const overformatted = `<p>${"<b></b>".repeat(Math.ceil(MAX_MESSAGE_HTML_LENGTH /
 describe("Send a message", () => {
   it(`says a message over ${MAX_MESSAGE_LENGTH} characters, or in more markup than a frame carries, is too long instead of sending it`, () => {
     const { result } = joinGeneral();
-    let sent: boolean | undefined;
+    let sent: AddPreview | null | undefined;
     act(() => {
       sent = result.current.postMessage(paragraphOf(MAX_MESSAGE_LENGTH + 1));
     });
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
     expect(socket().sentOfType("message.create")).toEqual([]);
     expect(result.current.state.messages).toEqual([]);
-    expect(result.current.state.notice).toBe("Messages can be up to 10,000 characters.");
+    expect(result.current.state.notice).toBe("Messages can be up to 40,000 characters.");
     act(() => {
       sent = result.current.postMessage(overformatted);
     });
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
 
     act(() => {
       sent = result.current.postMessage(paragraphOf(MAX_MESSAGE_LENGTH));
     });
-    expect(sent).toBe(true);
+    expect(sent).toBeTypeOf("function");
     expect(socket().sentOfType("message.create")).toHaveLength(1);
+  });
+});
+
+describe("Link previews after sending", () => {
+  const preview: LinkPreview = { title: "Basecamp", url: "https://basecamp.com/", image: null, description: "Calm & organized" };
+
+  it("sends the preview of a link that comes once the message has gone, naming the message, unless it's offline", () => {
+    const { result } = joinGeneral();
+    let addPreview!: AddPreview;
+    act(() => {
+      addPreview = result.current.postMessage("<p>https://basecamp.com</p>")!;
+    });
+    addPreview(preview);
+    const { clientMessageId } = socket().sentOfType("message.create")[0]!;
+    expect(socket().sentOfType("message.preview")).toEqual([{ type: "message.preview", clientMessageId, preview }]);
+
+    socket().drop();
+    addPreview(preview);
+    expect(socket().sentOfType("message.preview")).toHaveLength(1);
+  });
+
+  it("shows nothing when the room can't add one, as the page sent it of its own accord", () => {
+    const { result } = joinGeneral();
+    socket().receive({ type: "error", message: "Something went wrong", failed: "message.preview" });
+    expect(result.current.state.notice).toBeNull();
   });
 });
 
@@ -1062,16 +1088,16 @@ describe("Scroll back through history", () => {
 describe("Link to a message", () => {
   it("opens the room around the message its permalink names, and connects again without it once in", () => {
     renderHook(() => useRoom("general", ada, () => {}, "m 5"));
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&around=m%205");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&around=m%205");
     // Until the room lets the page in, connecting again still asks for it.
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&around=m%205");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&around=m%205");
     socket().open();
     socket().receive({ type: "welcome", you: ada, messages: [message("m 5")], present: [ada], hasMore: false, hasNewer: true, around: "m 5", seq: 4 });
     socket().drop();
     wait(500);
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=4&since=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=1&protocol=5&since=4");
   });
 
   it("goes to a message it holds without asking the room, and asks for the page around one it doesn't", () => {
@@ -1174,7 +1200,7 @@ describe("Edit a message", () => {
     });
     expect(sent).toBe(false);
     expect(socket().sentOfType("message.update")).toEqual([]);
-    expect(result.current.state.notice).toBe("Messages can be up to 10,000 characters.");
+    expect(result.current.state.notice).toBe("Messages can be up to 40,000 characters.");
   });
 
   it("shows the room's refusal", () => {
@@ -1290,7 +1316,7 @@ describe("Presence", () => {
   it("tells the room whether the tab is shown as it connects", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
     joinGeneral({ connect: false });
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=5");
   });
 
   it("tells the room once the tab has been hidden for 5 seconds, and once it has been shown for 5 again", () => {
@@ -1436,13 +1462,22 @@ describe("Threads", () => {
     expect(result.current.room.state.messages.map((m) => m.id)).toEqual(["m1"]);
   });
 
+  it("sends the preview of a link that comes once a reply has gone, naming the reply", () => {
+    const { result } = openThread();
+    socket().receive({ type: "thread.opened", parentId: "m1", parent, messages: [], hasMore: false });
+    const preview: LinkPreview = { title: "Basecamp", url: "https://basecamp.com/", image: null, description: "" };
+    act(() => result.current.thread.postReply("<p>https://basecamp.com</p>", true)!(preview));
+    const { clientMessageId } = socket().sentOfType("message.create")[0]!;
+    expect(socket().sentOfType("message.preview")).toEqual([{ type: "message.preview", clientMessageId, preview }]);
+  });
+
   it("refuses a reply that's too long, saying so in the thread", () => {
     const { result } = openThread();
-    let sent = true;
+    let sent: AddPreview | null = () => {};
     act(() => {
       sent = result.current.thread.postReply(`<p>${"x".repeat(MAX_MESSAGE_LENGTH + 1)}</p>`, false);
     });
-    expect(sent).toBe(false);
+    expect(sent).toBeNull();
     expect(result.current.thread.state.replies.notice).toBe(MESSAGE_TOO_LONG);
     expect(socket().sentOfType("message.create")).toEqual([]);
   });

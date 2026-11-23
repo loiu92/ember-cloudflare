@@ -1,13 +1,17 @@
 import { useContext, type MouseEvent } from "react";
 import type { Me, NavigationSlot } from "@ember/protocol";
+import { HalfMoon } from "@/components/icons/iconoir";
 import { PageLink } from "@/components/page-link";
+import { Bookmark } from "@/components/icons/iconoir";
 import { useAccount } from "@/hooks/use-account";
 import { NEW_DIRECT_PATH, PROFILE_PATH, SEARCHES_PATH, WORKSPACE_SETTINGS_PATH } from "@/hooks/use-route";
 import { cn } from "@/lib/utils";
 import { AppearanceMenu } from "./appearance-menu";
+import { HistoryButtons } from "./history-buttons";
 import { NavigationIcon } from "./navigation-icon";
 import { opensNewDirect } from "./new-direct-dialog";
 import { OpenSearchContext, opensSearch } from "./search-box";
+import { openReportsNamed } from "./settings-navigation";
 import { UserAvatar } from "./user-avatar";
 
 const RAIL_LINK = cn(
@@ -72,6 +76,42 @@ function ActivityButton({ on, unread, onToggle }: Activity) {
   );
 }
 
+/** The Saved control: whether the pane is open, and how many messages are saved for later. */
+export interface Saved {
+  on: boolean;
+  count: number;
+  onToggle: () => void;
+}
+
+/**
+ * Saved, which opens the pane of messages you've saved for later while it's pressed, with how many there
+ * are in an ink pill at its corner, hidden at none, as Activity counts its unread. Saved isn't one of the
+ * icons an administrator picks, so it's Iconoir's bookmark itself.
+ */
+function SavedButton({ on, count, onToggle }: Saved) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-description={count > 0 ? `${count} saved` : undefined}
+      title="Show saved messages"
+      onClick={onToggle}
+      className={cn(RAIL_LINK, "aria-pressed:bg-hover aria-pressed:text-foreground")}
+    >
+      <Bookmark className="size-[22px]" />
+      <span>Saved</span>
+      {count > 0 && (
+        <span
+          aria-hidden="true"
+          className="absolute top-px right-[5px] inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-[12px] border-2 border-surface bg-foreground px-[3px] text-[10px] leading-none font-semibold text-background"
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 /**
  * The page shown, whose links the rail marks: every link to the page's own path (the logo and Home at
  * home, Search on search, whatever's searched for, Admin or Workspace on workspace settings, your avatar
@@ -85,8 +125,14 @@ interface Props {
   workspaceName: string;
   current: RailPage;
   activity: Activity;
+  /** When your push notifications are hushed until, as Do not disturb on your profile has it, or null while they aren't. */
+  dndUntil: string | null;
+  /** The Saved control: whether the pane is open, and how many messages are saved for later. */
+  saved: Saved;
   /** The release of Ember out since this one, such as "0.2", which Admin marks for an administrator, or null for none. */
   newRelease: string | null;
+  /** How many reports are open, which Admin marks for an administrator too. */
+  openReports?: number;
   /** Opens New direct message, which DMs does in place, from the link that opened it. */
   onNewDirect: (opener: HTMLElement) => void;
 }
@@ -94,18 +140,21 @@ interface Props {
 /**
  * The persistent navigation rail, drawn with the icons an administrator chose in Community settings, or
  * else with Iconoir's, as the project's owner chose. Admin has a dot while a newer release of Ember is
- * out, which General, where it goes, tells of.
+ * out, which General, where it goes, tells of, or while reports are open, which Membership counts.
  */
-export function Rail({ me, workspaceName, current, activity, newRelease, onNewDirect }: Props) {
+export function Rail({ me, workspaceName, current, activity, dndUntil, saved, newRelease, openReports = 0, onNewDirect }: Props) {
   const { logo } = useAccount();
   const openSearch = useContext(OpenSearchContext);
   const marked = activity.on ? null : current;
+  const notices = [newRelease !== null && `Ember ${newRelease} is available`, openReports > 0 && openReportsNamed(openReports)].filter((notice) => notice !== false);
   return (
     // Scrolls when a short screen (a phone in landscape) can't fit it all; widens by the notch's inset.
     <nav
       aria-label="Workspace"
       className="flex h-full w-[calc(var(--spacing-rail)+env(safe-area-inset-left))] flex-col items-center gap-3 overflow-y-auto overscroll-contain border-r bg-surface pt-4 pr-3 pb-[max(16px,env(safe-area-inset-bottom))] pl-[calc(12px+env(safe-area-inset-left))] [scrollbar-width:none]"
     >
+      {/* Back and Forward at the top, in line with the page's top bar, for a pointer: fingers have their own way back. */}
+      <HistoryButtons className="touch:hidden" />
       <PageLink
         href="/"
         aria-label="Ember home"
@@ -124,6 +173,7 @@ export function Rail({ me, workspaceName, current, activity, newRelease, onNewDi
       {/* Never marked, since its address opens New direct message over the last room visited. */}
       <RailLink slot="dms" label="DMs" href={NEW_DIRECT_PATH} current={false} onClick={opensNewDirect(onNewDirect)} />
       <ActivityButton {...activity} />
+      <SavedButton {...saved} />
       {/* Opens the search box in place, for everything. */}
       <RailLink slot="search" label="Search" href={SEARCHES_PATH} current={marked === "search"} onClick={opensSearch(openSearch)} />
       <hr className="my-1 w-8 border-t" />
@@ -132,18 +182,26 @@ export function Rail({ me, workspaceName, current, activity, newRelease, onNewDi
         label={me.administrator ? "Admin" : "Workspace"}
         href={WORKSPACE_SETTINGS_PATH}
         current={marked === "workspace"}
-        notice={newRelease === null ? undefined : `Ember ${newRelease} is available`}
+        notice={notices.length > 0 ? notices.join(". ") : undefined}
       />
       <AppearanceMenu />
-      {/* Your avatar, at 36px, links to your profile, where you log out. */}
+      {/* Your avatar, at 36px, links to your profile, where you log out, with a crescent on it while
+          Do not disturb hushes your push notifications. */}
       <PageLink
         href={PROFILE_PATH}
         aria-label="Your profile"
-        title={me.name}
+        title={dndUntil !== null ? `${me.name} — push notifications hushed` : me.name}
         aria-current={marked === "profile" ? "page" : undefined}
         className="flex shrink-0 rounded-full touch:p-1"
       >
-        <UserAvatar user={me} />
+        <span className="relative flex">
+          <UserAvatar user={me} />
+          {dndUntil !== null && (
+            <span className="absolute -right-0.5 -bottom-0.5 flex size-[15px] items-center justify-center rounded-full bg-surface">
+              <HalfMoon className="size-2.5" />
+            </span>
+          )}
+        </span>
       </PageLink>
     </nav>
   );

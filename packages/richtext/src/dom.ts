@@ -1,3 +1,5 @@
+
+
 // The package for browsers: markup parsed by the platform's own HTML parser, in a document without
 // a browsing context, so nothing in it runs or loads and it parses without scripting, and without
 // bundling parse5.
@@ -24,7 +26,8 @@ let inertDocument: Document | undefined;
  * `parseHtml`'s counterpart: the fragment parsing algorithm, run by setting a context element's
  * `innerHTML`. Gumbo's limits are checked on the tree that results, which can't show the
  * attributes the browser dropped as duplicates, or the elements it closed early. Nor does it show
- * which formatting elements were reopened, so only the server keeps `MAX_REOPENED_ELEMENTS`.
+ * which formatting elements were reopened or copied, so only the server keeps `MAX_REOPENED_ELEMENTS`
+ * and `MAX_COPIED_ATTRIBUTES_LENGTH`.
  */
 export const parseDom: HtmlParser = (markup, context = BODY) => {
   inertDocument ??= new DOMParser().parseFromString("", "text/html");
@@ -76,4 +79,4 @@ function isTemplate(element: globalThis.Element): element is HTMLTemplateElement
   return element.namespaceURI === HTML_NAMESPACE && element.localName === "template";
 }
 
-export const { prepareBody, plainText, mentionedUsers, userIdsIn, writtenBody, editableBody, autoLink, displayBody } = withParser(parseDom);
+export const { prepareBody, plainText, mentionedUsers, userIdsIn, groupIdsIn, writtenBody, editableBody, autoLink, displayBody, hasPreview } = withParser(parseDom);

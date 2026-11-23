@@ -5,10 +5,12 @@
 import type { AgentProfile } from "./agents.ts";
 import type { YourApp } from "./apps.ts";
 import type { AssistantSettings, YourAssistant } from "./assistant.ts";
+import { parseBlockedWords } from "./blocked-words.ts";
 import { isActionId, isActionValue, type Card } from "./cards.ts";
 import type { StoredFile } from "./files.ts";
-import type { HuddlesSettings, LiveHuddle } from "./huddles.ts";
+import type { HuddleSounds, HuddlesSettings, LiveHuddle, MessageHuddle } from "./huddles.ts";
 import type { OutsideConnection } from "./outside.ts";
+import type { SsoSettings, SsoStatus } from "./sso.ts";
 import { MAX_ID_LENGTH } from "./pages.ts";
 import { MAX_PUSH_ENDPOINT_LENGTH } from "./push.ts";
 import { ROOM_ICON_NAMES } from "./room-icons.ts";
@@ -80,7 +82,24 @@ export type {
   YourAssistantChanges,
 } from "./assistant.ts";
 // And the rest of huddles.ts, from "@ember/protocol/huddles", which only the Huddles card, its setup and the Worker's huddles use.
-export type { HuddlesField, HuddlesForgotten, HuddlesSaved, HuddlesSettings, HuddlesSetup, LiveHuddle } from "./huddles.ts";
+export type {
+  HuddleRelayField,
+  HuddleRelaySetup,
+  HuddleSoundChanges,
+  HuddleSounds,
+  HuddleSoundsChanged,
+  HuddlesField,
+  HuddlesForgotten,
+  HuddlesSaved,
+  HuddlesSettings,
+  HuddlesSetup,
+  LiveHuddle,
+  MessageHuddle,
+  PastHuddle,
+  PastHuddles,
+} from "./huddles.ts";
+// And the rest of sso.ts, from "@ember/protocol/sso", which only the sign-in pages, the Single sign-on card and the Worker's single sign-on use.
+export type { SsoAccount, SsoConnection, SsoField, SsoForgotten, SsoSaved, SsoSettings, SsoSetup, SsoStatus } from "./sso.ts";
 export {
   FILE_NAME_NOT_KEPT,
   FILE_TOO_LARGE,
@@ -110,7 +129,9 @@ export {
   CUSTOM_STYLES_PATH,
   EMAIL_SIGN_UP_PATH,
   emailSignUpLink,
+  guestSignInLink,
   huddlePath,
+  HUDDLES_PATH,
   INVITATION_PATH,
   invitationLink,
   isAppPage,
@@ -120,19 +141,25 @@ export {
   NEW_APP_PATH,
   NEW_BOT_PATH,
   NEW_DIRECT_PATH,
+  pageAfterWelcome,
   PASSWORD_RESET_PATH,
+  messagePath,
   PROFILE_PATH,
   PUSH_SUBSCRIPTIONS_PATH,
   SEARCHES_PATH,
+  signInReturnPathIn,
   SIGN_UP_PATH,
   threadPath,
   TRANSFER_PATH,
   transferLink,
   TURNSTILE_CHECK_PATH,
+  WELCOME_PATH,
+  welcomePath,
   withEmailAddress,
   WORKSPACE_PRELOADS,
   WORKSPACE_SETTINGS_PATH,
   workspacePageOf,
+  workspacePathIn,
   type RoomAccess,
   type WorkspacePage,
 } from "./pages.ts";
@@ -174,6 +201,7 @@ export {
   type SearchResults,
   type SearchSort,
 } from "./search.ts";
+export { MAX_SAVES, parseSave, type SavedItem, type SavedItems, type SavedMessage, type SaveMade } from "./saves.ts";
 
 export type UserId = string;
 export type RoomId = string;
@@ -198,12 +226,38 @@ export type Role = "member" | "administrator" | "bot";
  */
 export type UserStatus = "active" | "deactivated" | "banned" | "suspended";
 
+/** How long the emoji someone wears beside their name may be, which a made-up one can be more than a character of. */
+export const MAX_MOOD_EMOJI_LENGTH = 24;
+/** How long the few words beside someone's name may be. */
+export const MAX_MOOD_TEXT_LENGTH = 100;
+
+/**
+ * What someone wears beside their name: a small emoji and a few words, which comes off by itself at
+ * `clearAt`, or stays until they take it off while that's null. When `clearAt` has passed it counts as
+ * none, which the page showing it decides: the workspace keeps it and sets no alarm for it.
+ */
+export interface PersonMood {
+  emoji: string;
+  text: string;
+  /** When it comes off by itself, as an ISO time, or null to wear it until they take it off. */
+  clearAt: string | null;
+}
+
+/** Whether `a` and `b` are the same mood, word for word and to the minute. */
+export function sameMood(a: PersonMood | null | undefined, b: PersonMood | null | undefined): boolean {
+  return a === b || (a !== undefined && b !== undefined && a !== null && b !== null && a.emoji === b.emoji && a.text === b.text && a.clearAt === b.clearAt);
+}
+
 /** Someone as the people directory lists them. */
 export interface DirectoryUser extends User {
+  /** The username they picked, which typing @ finds them by too, as `usernameOf` keeps one. Left out while they have none. */
+  username?: string;
   /** What they say about themselves, or null when they haven't said. */
   bio: string | null;
   role: Role;
   status: UserStatus;
+  /** What they wear beside their name (`PersonMood`), or null while they wear none. */
+  mood?: PersonMood | null;
   /** Their avatar, `/users/<token>/avatar?v=<version>`, whose address changes whenever they do, and @ember's with each release too. */
   avatarUrl: string;
   /**
@@ -211,12 +265,49 @@ export interface DirectoryUser extends User {
    * once it's deleted, as its answers stay. Left out for anyone else.
    */
   agent?: true;
+  /**
+   * Whether they're an AI agent only administrators can ask, as Admin access on its page sets it, which
+   * nobody else is offered to mention or to write to. Left out for anyone else. One only administrators'
+   * direct messages reach is listed to administrators alone.
+   */
+  adminsOnly?: true;
 }
 
-/** What `GET /api/users` answers: everyone in the workspace, deactivated, banned and suspended people too. */
+/** What `GET /api/users` answers: everyone in the workspace, deactivated, banned and suspended people too, and the workspace's groups. */
+/**
+ * What `GET /api/users` answers: everyone in the workspace, deactivated, banned and suspended people too,
+ * but, for anyone who isn't an administrator, the AI agents only administrators' direct messages reach.
+ */
 export interface Directory {
   users: DirectoryUser[];
+  groups: UserGroup[];
 }
+
+export type GroupId = string;
+
+/** A group of people one mention stands for, as the people directory lists it. */
+export interface UserGroup {
+  id: GroupId;
+  /** As it's kept: lowercased, as people's names are compared. */
+  name: string;
+  /** Everyone in it, by id, in no order a mention would keep. */
+  memberIds: UserId[];
+}
+
+/** The most people a group can have, which creating or changing one is refused past. */
+export const MAX_GROUP_MEMBERS = 100;
+export const GROUP_TOO_BIG = `A group can have at most ${MAX_GROUP_MEMBERS.toLocaleString("en-US")} members.`;
+/** What a workspace's groups are called in the settings' list, which is a row each. */
+export const MAX_GROUP_NAME_LENGTH = 100;
+export const GROUP_NAME_TOO_LONG = `Name must be at most ${MAX_GROUP_NAME_LENGTH} characters.`;
+/** Why a group is refused the name another has, however it's capitalised. */
+export const GROUP_NAME_TAKEN = "A group is already named that.";
+/** Why a group is refused a member list naming someone who isn't an active person. */
+export const GROUP_MEMBER_UNKNOWN = "A group's members are people in the workspace.";
+/** The most groups a workspace keeps, as one settings list shows. */
+export const MAX_GROUPS = 1_000;
+/** Why a group is refused once the workspace keeps as many as it can. */
+export const GROUPS_FULL = `The workspace can have at most ${MAX_GROUPS.toLocaleString("en-US")} groups. Delete one first.`;
 
 export type RoomKind = "open" | "closed" | "direct";
 
@@ -235,6 +326,11 @@ export interface SharedRoom {
   name: string;
   /** Null for the default `#`. */
   icon: RoomIconName | null;
+  /**
+   * False while the room's settings don't allow huddles in it, as a Slack channel's can: nobody starts or
+   * joins one there, where huddles are on. Left out otherwise, which is how every room starts.
+   */
+  huddles?: false;
 }
 
 /**
@@ -248,6 +344,17 @@ export interface DirectRoom {
   members: User[];
   /** When its latest message came, or when it started, until one has, as an ISO time, which DMs are listed by, latest first. */
   activeAt: string;
+  /**
+   * Who joined the workspace, and when, for a DM started as they joined, with someone who was here
+   * already, as Slack starts one: its timeline opens with their having joined. Left out for any other DM.
+   */
+  joined?: Joined;
+}
+
+/** Someone who joined the workspace, by id, and when, as an ISO time. */
+export interface Joined {
+  userId: UserId;
+  at: string;
 }
 
 /** A room someone is in, as their room list shows it: a shared room, or a DM. */
@@ -276,10 +383,10 @@ export const startingInvolvement = (room: Room): Involvement => (room.kind === "
 /**
  * A room in someone's sidebar, with whether a message has come since they last had it open in a shown
  * tab, which marks it unread for them until they do again, when the first of those messages came, while
- * it's marked, and their level in it. A room they've hidden is listed too, since they can still open it,
- * but their sidebar leaves it out.
+ * it's marked, in a DM how many have come since, and their level in it. A room they've hidden is listed
+ * too, since they can still open it, but their sidebar leaves it out.
  */
-export type SidebarRoom = Room & { unread: boolean; unreadSince?: string; involvement: Involvement };
+export type SidebarRoom = Room & { unread: boolean; unreadSince?: string; unreadCount?: number; involvement: Involvement };
 
 /**
  * The rooms someone has starred, which their sidebar lists first, in the order they starred them.
@@ -292,10 +399,21 @@ export interface Favorites {
 }
 
 /**
+ * The people someone has blocked, in the order they blocked them. Their messages collapse for them, and
+ * their DM with one of them alone leaves the sidebar. `version` counts the changes to them, so of two
+ * lists, the newer is the one with the larger version, whichever arrives last.
+ */
+export interface Blocks {
+  userIds: UserId[];
+  version: number;
+}
+
+/**
  * What `GET /api/sidebar` answers: the rooms someone is in, in the order they were made, the ones
  * they've starred, the invitation, when they're an administrator in its room who hasn't dismissed the
- * card, the people suggested for DMs, and the huddles going on in their rooms. It comes with an ETag,
- * and a request whose If-None-Match names it gets 304 Not Modified instead.
+ * card, the huddles going on in their rooms, the people they've blocked, and which of a huddle's sounds
+ * they hear, once they've turned one off. It comes with an ETag, and a request whose If-None-Match names
+ * it gets 304 Not Modified instead.
  */
 export interface Sidebar {
   rooms: SidebarRoom[];
@@ -314,6 +432,18 @@ export interface Sidebar {
   suggestions: User[];
   /** The huddle going on in each of `rooms` that has one, by the room's id. `room.huddle` frames keep it current. */
   huddles: Record<RoomId, LiveHuddle>;
+  /** Whom they've blocked, which `blocks.changed` frames keep current. */
+  blocks: Blocks;
+  /**
+   * For an administrator, how many open reports they see, which never include the reports of them, as
+   * `reports.changed` frames keep it. Nobody else is given it.
+   */
+  openReports?: number;
+  /**
+   * Which of a huddle's sounds they hear, as the switches on their profile leave them, left out while
+   * they hear them all. `huddle.sounds` frames keep it current.
+   */
+  huddleSounds?: HuddleSounds;
 }
 
 /** How many people the sidebar's suggestions start from, Campfire's `DIRECT_PLACEHOLDERS`. */
@@ -335,9 +465,30 @@ export type NewRoom = { name: string; icon?: RoomIconChoice } & ({ kind: "open" 
 /** Someone active, as a room's settings list them, with whether they're in the room. */
 export interface RoomPerson extends User {
   member: boolean;
+  /**
+   * When their stay in this room as one of its guests ends, as an ISO time, while they're a guest of
+   * it, which an administrator added from its settings and can extend or end there. Left out for
+   * anyone else.
+   */
+  guestUntil?: string;
 }
 
-/** What `GET /api/rooms/new` answers for the New room forms: everyone active, by name. */
+/**
+ * One of a room's guests, as its settings' guest answers name them: who they are and when their stay
+ * ends, as an ISO time.
+ */
+export interface RoomGuest {
+  userId: UserId;
+  name: string;
+  untilAt: string;
+}
+
+/** What `POST /api/rooms/<id>/guests` adds, and `PUT /api/rooms/<id>/guests/<user id>` answers: a guest of the room, as its settings mark them. */
+export interface GuestAnswer {
+  guest: RoomGuest;
+}
+
+/** What `GET /api/rooms/new` answers for the New room forms: everyone active who can be put in a room, by name (`RoomSettings.people`). */
 export interface NewRoomForm {
   people: User[];
 }
@@ -355,20 +506,66 @@ export interface StartedDirect {
   room: DirectRoom;
 }
 
+/**
+ * Why `POST /api/directs` refuses a new DM with someone, `name`, who has blocked whoever starts it, in
+ * words that don't say so. A DM they have already opens as ever.
+ */
+export const notTakingDirects = (name: string) => `${name} isn't taking direct messages.`;
+
+/**
+ * What `POST` and `DELETE /api/users/<id>/block` answer, which block someone and unblock them: whom you've
+ * blocked now, and your level in your DM with them alone, when blocking hid it or unblocking showed it again.
+ */
+export interface ChangedBlocks {
+  blocks: Blocks;
+  direct: { roomId: RoomId; involvement: Involvement } | null;
+}
+
 /** What `GET /api/rooms/<id>/settings` answers for a room's settings page. DMs have none. */
 export interface RoomSettings {
   room: SharedRoom;
   /** Whether you can change the room, as administrators and its creator can. Others see it read-only. */
   canAdminister: boolean;
-  /** Everyone active, by name. */
+  /**
+   * Whether you can turn huddles on or off in it, as only administrators can, as a Slack workspace's
+   * owners and admins can in a channel. Its creator, who can change the rest, sees of them what others do.
+   */
+  canChangeHuddles: boolean;
+  /** Everyone active who can be put in a room, by name: all but the AI agents only administrators' direct messages reach. */
   people: RoomPerson[];
 }
 
 /**
- * What `PATCH /api/rooms/<id>` changes in a room, as its settings save it: its name, its icon, and who
- * it's for, everyone or just the people `memberIds` names, which takes anyone else out of it.
+ * What `PATCH /api/rooms/<id>` changes in a room, as its settings save it: its name, its icon, whether
+ * huddles are allowed in it, which is an administrator's to change, and who it's for, everyone or just
+ * the people `memberIds` names, which takes anyone else out of it.
  */
-export type RoomChanges = { name?: string; icon?: RoomIconChoice } & ({ kind?: "open" } | { kind: "closed"; memberIds: UserId[] });
+export type RoomChanges = { name?: string; icon?: RoomIconChoice; huddles?: boolean } & ({ kind?: "open" } | { kind: "closed"; memberIds: UserId[] });
+
+/** What `POST /api/user_groups` makes: a group named `name` with the people `memberIds` names. */
+export interface NewUserGroup {
+  name: string;
+  memberIds: UserId[];
+}
+
+/**
+ * What `PATCH /api/user_groups/<id>` changes in a group: its name, its members, which takes everyone
+ * left out of it, or both.
+ */
+export interface UserGroupChanges {
+  name?: string;
+  memberIds?: UserId[];
+}
+
+/** What `POST /api/user_groups` and `PATCH /api/user_groups/<id>` answer: the group as it then is. */
+export interface UserGroupAnswer {
+  group: UserGroup;
+}
+
+/** What `GET /api/user_groups` answers: the workspace's groups, by name, each with everyone in it. */
+export interface UserGroupsAnswer {
+  groups: UserGroup[];
+}
 
 /**
  * The rail's buttons and the appearance modes, whose icons an administrator can choose in Community
@@ -460,6 +657,20 @@ export interface Account {
    */
   memberfulSignIn: boolean;
   /**
+   * Whether the people the single sign-on provider signs in join with it, which an administrator turns on
+   * in Membership as Single sign-on, once it's set up. Off until one does. People who joined with it keep
+   * signing in with it once it's off, while it's set up.
+   */
+  ssoJoin: boolean;
+  /**
+   * Whether only the people the single sign-on provider signs in sign in, and administrators, which an
+   * administrator turns on in Membership as SSO only: then the join link, open sign-up, Email domain and
+   * signing in with just a name are off, and only administrators and the people they invite sign in with
+   * a password. Off until one turns it on, and never on while single sign-on is off, nor with Open or
+   * Memberful's Members only.
+   */
+  ssoSignIn: boolean;
+  /**
    * Whether people with an email address at one of `emailDomains` may join with a link Ember emails
    * them, which they ask for at `/join/email`, and which an administrator turns on in Membership as Email
    * domain. Off until one does, and off whatever this says while Memberful is members only
@@ -483,6 +694,16 @@ export interface Account {
    * does, when no room's header has a huddle button.
    */
   huddles: boolean;
+  /**
+   * Whether people may turn their camera on in a huddle, as the Huddles tab's Cameras switch says. On
+   * until an administrator turns it off, which keeps huddles to voices.
+   */
+  huddleCameras: boolean;
+  /**
+   * Whether people may share their screen in a huddle, as the Huddles tab's Screen sharing switch says.
+   * On until an administrator turns it off.
+   */
+  huddleScreens: boolean;
 }
 
 /** What `GET /api/account` answers for workspace settings. */
@@ -522,6 +743,11 @@ export interface WorkspaceSettings {
    */
   memberfulSiteKept: string | null;
   /**
+   * The single sign-on provider, as the Single sign-on card shows it to administrators, once it's set up,
+   * by an administrator or by the deployment's secrets, and null otherwise, or for anyone else.
+   */
+  sso: SsoSettings | null;
+  /**
    * Where the keys of the Cloudflare Turnstile widget come from that checks whoever signs up, or asks
    * Ember to email them, is a person, as Membership's Turnstile card says: the deployment's secrets
    * `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, which take the place of any others, the ones an
@@ -535,6 +761,8 @@ export interface WorkspaceSettings {
   invitations: EmailInvitation[];
   /** The domains Email domain lets in, as kept, whether it's on or not, for administrators, and none for anyone else. */
   emailDomains: string[];
+  /** The words and phrases Blocked words keeps out of messages, reactions, names, usernames and bios, for administrators, and none for anyone else. */
+  blockedWords: string[];
   /** The addresses Ember knows reach it besides its own, which the Custom domain card names, for administrators, and none for anyone else. */
   addresses: EmberAddresses;
   /** Ember AI as the AI assistant tab shows it, for administrators while it's on, and null otherwise. */
@@ -727,7 +955,8 @@ export interface NewJoinCode {
  * What `PATCH /api/account` changes, as workspace settings save it: the workspace's name, its tagline,
  * its settings, its custom domain, which can only be the address the request comes to, or null for
  * none, the icons of the rail's buttons and the appearance modes, the address Ember's email comes from,
- * or null for none, and the domains Email domain lets in, in place of those it had.
+ * or null for none, the domains Email domain lets in, in place of those it had, and the words and
+ * phrases Blocked words keeps out, in place of those it had too.
  */
 export interface AccountChanges {
   name?: string;
@@ -737,6 +966,7 @@ export interface AccountChanges {
   navigationIcons?: NavigationIconChanges;
   emailFrom?: string | null;
   emailDomains?: string[];
+  blockedWords?: string[];
 }
 
 /**
@@ -749,25 +979,36 @@ export interface AccountChanges {
 export interface AccountSettings {
   hideTranslationButtons?: boolean;
   restrictRoomCreation?: boolean;
+  huddleCameras?: boolean;
+  huddleScreens?: boolean;
   joinLink?: boolean;
   openSignUp?: boolean;
   memberfulJoin?: boolean;
   memberfulSignIn?: boolean;
+  ssoJoin?: boolean;
+  ssoSignIn?: boolean;
   emailDomainSignUp?: boolean;
 }
 
-/** Whether the join link lets people in: its switch is on, and Memberful isn't members only, which turns it off. */
-export const joinsWithLink = ({ joinLink, memberfulSignIn }: Pick<Account, "joinLink" | "memberfulSignIn">) => joinLink && !memberfulSignIn;
+/**
+ * Whether people sign in only with an account elsewhere, but administrators and the people they invite:
+ * Memberful is members only, or single sign-on is the only way in. Then the join link, open sign-up,
+ * Email domain and signing in with just a name are off.
+ */
+export const signsInElsewhereOnly = ({ memberfulSignIn, ssoSignIn }: Pick<Account, "memberfulSignIn" | "ssoSignIn">) => memberfulSignIn || ssoSignIn;
 
-/** Whether anyone may create an account at `/join`: Open is on, and Memberful isn't members only, which it can't be on with. */
-export const signsUpOpenly = ({ openSignUp, memberfulSignIn }: Pick<Account, "openSignUp" | "memberfulSignIn">) => openSignUp && !memberfulSignIn;
+/** Whether the join link lets people in: its switch is on, and people don't sign in only elsewhere, which turns it off. */
+export const joinsWithLink = (account: Pick<Account, "joinLink" | "memberfulSignIn" | "ssoSignIn">) => account.joinLink && !signsInElsewhereOnly(account);
+
+/** Whether anyone may create an account at `/join`: Open is on, and people don't sign in only elsewhere, which it can't be on with. */
+export const signsUpOpenly = (account: Pick<Account, "openSignUp" | "memberfulSignIn" | "ssoSignIn">) => account.openSignUp && !signsInElsewhereOnly(account);
 
 /**
  * Whether people may join with an email address at the workspace's email domains: Email domain is on,
  * with a domain to let in, and Memberful isn't members only, which turns it off.
  */
-export const signsUpWithEmailDomain = ({ emailDomainSignUp, emailDomains, memberfulSignIn }: Pick<Account, "emailDomainSignUp" | "emailDomains" | "memberfulSignIn">) =>
-  emailDomainSignUp && emailDomains.length > 0 && !memberfulSignIn;
+export const signsUpWithEmailDomain = (account: Pick<Account, "emailDomainSignUp" | "emailDomains" | "memberfulSignIn" | "ssoSignIn">) =>
+  account.emailDomainSignUp && account.emailDomains.length > 0 && !signsInElsewhereOnly(account);
 
 /** Why turning on Open, or Memberful's Members only, is refused while the other is on: Members only lets only Memberful's members in. */
 export const OPEN_WITH_MEMBERFUL = "Open and Members only can't both be on. Turn one off first.";
@@ -906,6 +1147,11 @@ export interface Person extends DirectoryUser {
 export interface PersonAnswer {
   person: Person;
   /**
+   * The workspace's profile fields, in the order they come in the profile, with what this person saved
+   * for each, "" for none, which their page shows for the ones they filled in.
+   */
+  fields: ProfileFieldEntry[];
+  /**
    * The id in a new sign-in link for them (`transferLink`), which administrators are given for anyone
    * active who isn't a bot.
    */
@@ -917,10 +1163,14 @@ export interface PersonAnswer {
 /** You, as your profile shows you. */
 export interface Profile {
   name: string;
+  /** The username you picked, which typing @ finds you by too, or null while you have none. */
+  username: string | null;
   /** Null for someone who signed in with just a name, or who took theirs out. */
   emailAddress: string | null;
   /** What you say about yourself, or null when you haven't said. */
   bio: string | null;
+  /** What you wear beside your name, or null while you wear none. */
+  mood: PersonMood | null;
   /** Your avatar, as the people directory gives it (`DirectoryUser.avatarUrl`). */
   avatarUrl: string;
   /** Whether you've uploaded an avatar, which Remove avatar takes away, though one that can't be resized shows your initials. */
@@ -939,12 +1189,26 @@ export interface Profile {
    * nothing to connect, or while Memberful isn't members only and you haven't connected one.
    */
   memberful: MemberfulStatus | null;
+  /**
+   * Where you stand with single sign-on (`SsoStatus`): the account at the provider you've connected, or
+   * none yet while it's the only way in. Null when there's nothing to show: while it isn't set up, for a
+   * guest, or while it isn't the only way in and you haven't connected one.
+   */
+  sso: SsoStatus | null;
   /** How much @ember thinks and how long it answers you, and the most each may be, and the model you picked, if you did, and the ones you can pick, or null while Ember AI is off. */
   assistant: YourAssistant | null;
   /** The connected apps you can sign in to yourself, by name, each with your sign-in to it, if you've made one: none while Ember AI is off, or for a guest. */
   apps: YourApp[];
   /** The AI apps connected to Ember as you, newest first, or null when none can be: while an administrator hasn't let AI apps connect, or for a guest. */
   outsideAi: OutsideConnection[] | null;
+  /**
+   * When your hush of push notifications (Do not disturb) ends, as an ISO time, or null while you
+   * haven't hushed them. It hushes push notifications alone: rooms, unread marks, the badge and
+   * banners in the app carry on.
+   */
+  dndUntil: string | null;
+  /** The workspace's profile fields, in the order its administrators put them in, with what you saved for each, "" for none. */
+  fields: ProfileFieldEntry[];
 }
 
 /** What `GET /api/users/me/profile` answers, and `PATCH` once it has saved. */
@@ -960,9 +1224,13 @@ export interface ProfileAnswer {
  */
 export interface ProfileChanges {
   name?: string;
+  /** Your username, as typed, which is kept as `usernameOf` keeps one, or a blank one to have none. */
+  username?: string;
   emailAddress?: string;
   password?: string;
   bio?: string;
+  /** The mood you wear beside your name, or null to take it off. What's left out stays as it is. */
+  mood?: PersonMood | null;
   /** The password you have, which changing your email address or password needs while you have one. */
   currentPassword?: string;
   /**
@@ -970,6 +1238,75 @@ export interface ProfileChanges {
    * others, as signing out names the one it forgets (`SignOut`).
    */
   pushSubscriptionEndpoint?: string;
+  /**
+   * What to save for the workspace's profile fields, by their ids: what you typed, or "" to save none,
+   * clearing what you had. Only fields that changed are named, and the server checks each name and
+   * value once it knows the fields as they are then.
+   */
+  fieldValues?: Record<string, string>;
+}
+
+/** The most characters the name of a profile field takes, and each value or choice saved for one. */
+export const MAX_PROFILE_FIELD_NAME_LENGTH = 100;
+export const MAX_PROFILE_FIELD_VALUE_LENGTH = 200;
+
+/** The most profile fields a workspace can have, as Slack's does. */
+export const MAX_PROFILE_FIELDS = 10;
+
+/** The most choices a field with set choices takes. */
+export const MAX_PROFILE_FIELD_OPTIONS = 10;
+
+/** Why a field is refused, or a workspace can't take another one. */
+export const PROFILE_FIELD_NAME_REFUSED = `Give the field a name of at most ${MAX_PROFILE_FIELD_NAME_LENGTH} characters.`;
+export const PROFILE_FIELD_NAME_TAKEN = "There's a field with that name already.";
+export const PROFILE_FIELD_OPTIONS_REFUSED = `Set choices as one per line, at most ${MAX_PROFILE_FIELD_OPTIONS} of at most ${MAX_PROFILE_FIELD_VALUE_LENGTH} characters each.`;
+export const PROFILE_FIELDS_FULL = `A workspace can have at most ${MAX_PROFILE_FIELDS} profile fields. Delete one first.`;
+export const PROFILE_FIELD_VALUES_REFUSED = `Field values must be a JSON object of at most ${MAX_PROFILE_FIELD_VALUE_LENGTH} characters each.`;
+export const PROFILE_FIELD_VALUE_NOT_A_CHOICE = "Choose one of the field's choices.";
+export const PROFILE_FIELD_UNKNOWN = "That field is gone. Save again once your profile has loaded it.";
+export const PROFILE_FIELD_ORDER_REFUSED = "Field order must name each of the fields, once.";
+
+/** A field of the workspace's profiles, which administrators define and people fill in. */
+export interface ProfileField {
+  id: string;
+  name: string;
+  /** The choices it takes, or null for free text. */
+  options: string[] | null;
+}
+
+/** A field of the workspace's profiles, with the value someone saved for it, "" for none. */
+export interface ProfileFieldEntry extends ProfileField {
+  value: string;
+}
+
+/** What administrators give to add a field, or to rename one and set its choices. */
+export interface ProfileFieldChange {
+  name: string;
+  /** The choices it takes, or null for free text. */
+  options: string[] | null;
+}
+
+/** What `PUT` and `DELETE /api/users/me/dnd` answer: when your hush of push notifications ends, or null once it's lifted. */
+export interface DndAnswer {
+  dndUntil: string | null;
+}
+
+/** What `PUT /api/users/me/dnd` asks for: when to hush your push notifications until. */
+export interface DndChange {
+  until: string;
+}
+
+/**
+ * Parses an untrusted change to when your push notifications are hushed until. Returns why it's
+ * refused instead. Whether the time has passed, the server checks once it knows who's asking, by its
+ * own clock.
+ */
+export function parseDndChange(data: unknown): DndChange | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const { until } = data as Record<string, unknown>;
+  if (typeof until !== "string" || until.trim() === "") return "Until must be a time";
+  if (Number.isNaN(Date.parse(until))) return "Until must be a time";
+  return { until };
 }
 
 /** What the Set up Ember form shows in its Name and Email address fields while they're empty. */
@@ -1008,6 +1345,12 @@ export interface Bootstrap {
    * in with an account there, as members who joined with it keep doing once it's off.
    */
   signInWithMemberful: boolean;
+  /**
+   * What the sign-in page calls the single sign-on provider it offers Sign in with, while single sign-on
+   * lets its people join, or while anyone here signs in with it, as people who joined with it keep doing
+   * once it's off, or null while it offers none.
+   */
+  signInWithSso: string | null;
   /**
    * The site key of the Turnstile widget whose check the open sign-up form shows, and the forms that ask
    * Ember to email a link to join or a code to reset a password, to check that whoever fills them in is a
@@ -1138,9 +1481,6 @@ export const EMAIL_LINKS_LIMITED = "Too many links asked for from your network. 
 
 /** Why `/join/email` sends no link while Ember can't send email. */
 export const CANT_EMAIL_LINKS = "Ember can't email links right now. Try again later, or ask an administrator to invite you.";
-
-/** Why `/join/email` sent no link when the email provider refused to send it. */
-export const EMAIL_LINK_UNSENT = "Ember couldn't email you just now. Try again later.";
 
 /**
  * Whose password to reset, and to what, as `POST /api/recovery/reset-password` takes it from
@@ -1332,6 +1672,16 @@ export interface MemberfulDisconnection {
 }
 
 /**
+ * What Delete my account on your profile sends (`DELETE /api/users/me`), saying you mean it: your
+ * password while you have one, as changing your email address takes it, or else your name, typed as
+ * your profile has it.
+ */
+export interface AccountDeletion {
+  currentPassword?: string;
+  name?: string;
+}
+
+/**
  * Where to sign in at the Memberful site, within ten minutes, to connect the account you sign in to there
  * to yours here: what connecting from your profile answers, and what signing in with a password answers a
  * member whose password checks out while Memberful is members only, until they've connected one.
@@ -1428,14 +1778,14 @@ export const signInSaying = (problem: JoiningProblem) => `/session/new?${JOINING
 
 /**
  * Open sign-up's limits, which stand in for Turnstile's check while Ember lacks its keys: how many
- * people may sign up from an IP address in an hour, and how many new people in the workspace in the last
+ * people may sign up from a network in an hour, and how many new people in the workspace in the last
  * hour, however they joined, stop it, so that a flood can't use up the rows a Workers Free account
  * writes in a day.
  */
 export const SIGN_UPS_PER_ADDRESS = 5;
 export const SIGN_UPS_PER_HOUR = 50;
 
-/** Why open sign-up refuses someone from an IP address that has signed up as many times as it may in an hour. */
+/** Why open sign-up refuses someone from a network that has signed up as many times as it may in an hour. */
 export const SIGN_UP_LIMITED = "Too many sign-ups from your network. Try again in an hour.";
 
 /** Why open sign-up refuses anyone once the workspace has let in as many new people as it does in an hour. */
@@ -1483,6 +1833,15 @@ export const CURRENT_PASSWORD_WRONG = "That isn't your current password.";
  * a password that whoever holds their session could set would be another.
  */
 export const PASSWORD_WITH_MEMBERFUL = "You sign in with Memberful, so there's no password to set.";
+
+/** What a deleted account is called from then on, wherever anything still names it. */
+export const DELETED_PERSON_NAME = "Deleted person";
+/** Why Delete my account is refused without your password, while you have one. */
+export const DELETION_PASSWORD_NEEDED = "Enter your password to delete your account.";
+/** Why it's refused to someone without a password who hasn't typed their name as their profile has it. */
+export const DELETION_NAME_NEEDED = "Type your name as your profile has it to delete your account.";
+/** Why it's refused to the only administrator, so that there's always one. */
+export const ONLY_ADMINISTRATOR = "You're the only administrator. Make someone else an administrator before you delete your account.";
 
 export interface Boost {
   id: string;
@@ -1534,6 +1893,12 @@ export interface Message {
   /** The replies in the message's thread, once it has some, as the room shows them under it. */
   thread?: ThreadSummary;
   /**
+   * The huddle a message is of. The room writes one as a huddle starts there, in the name of whoever
+   * started it, and marks it over once nobody is left in it, and its thread is the huddle's. It shows
+   * the huddle in place of its text, which says only that a huddle started, and can't be edited.
+   */
+  huddle?: MessageHuddle;
+  /**
    * A message deleted while replies in its thread are left, which keeps its place for them: its text, file,
    * cards and boosts are gone, and it goes once its last reply does.
    */
@@ -1562,9 +1927,23 @@ export interface ThreadSummary {
 /** Whether a message shows in its room's timeline: every message but a reply that was sent only to its thread. */
 export const isInRoom = (message: Pick<Message, "parentId" | "alsoSent">) => message.parentId === undefined || message.alsoSent === true;
 
+/** How many messages a room keeps pinned, as Slack keeps a channel to a hundred. */
+export const MAX_PINS = 100;
+
+/** Why the room pins no more, once it has its hundred. */
+export const PINS_FULL = `A room keeps ${MAX_PINS} pins. Unpin one to pin another.`;
+
+/** A message someone pinned to its room, as the room's Pinned list shows it: the message, who pinned it and when. */
+export interface PinnedMessage {
+  message: Message;
+  by: User;
+  /** When they pinned it, as an ISO time. */
+  at: string;
+}
+
 /**
  * What a tab sends on a room socket. A socket from an IP address a ban blocks can read, but the room
- * answers each frame that would change messages or boosts with an `error`.
+ * answers each frame that would change messages, boosts or pins with an `error`.
  */
 export type ClientFrame =
   /**
@@ -1574,9 +1953,21 @@ export type ClientFrame =
   | { type: "message.create"; clientMessageId: string; body: string; parentId?: string; alsoSend?: boolean }
   /** A message's new body, as for `message.create`. */
   | { type: "message.update"; messageId: string; body: string }
+  /**
+   * The preview of a link in a message the tab sent as `clientMessageId`, which came after the message
+   * went, as one does for a link pasted just before Send, or typed. The room adds it below the message's
+   * text, as the composer adds one that comes in time, without marking it edited, as Slack adds a link's
+   * preview a moment after its message, if the message is still as it was sent, without a preview, and
+   * was sent within `LATE_PREVIEW_MS`. Otherwise it takes nothing, without a word.
+   */
+  | { type: "message.preview"; clientMessageId: string; preview: LinkPreview }
   | { type: "message.delete"; messageId: string }
   | { type: "boost.create"; messageId: string; content: string }
   | { type: "boost.delete"; boostId: string }
+  | { type: "pin.create"; messageId: string }
+  | { type: "pin.delete"; messageId: string }
+  /** Asks for the room's pinned messages, oldest pinned first. */
+  | { type: "pins.list" }
   | { type: "typing.start" }
   | { type: "typing.stop" }
   /** Up to `limit` messages before a message, oldest first, as history pages back from the oldest the timeline holds. */
@@ -1609,6 +2000,24 @@ export type ClientFrame =
    * makes up.
    */
   | { type: "card.click"; clickId: string; messageId: string; actionId: string; blockId?: string; value?: string }
+  /**
+   * A slash command typed in the room: `name` as it's kept (`commandNameOf`), without the "/" and
+   * lowercased, and `text`, whatever was typed after it. It goes on the room's own socket, as a
+   * `card.click` does, rather than a route of its own: the socket is who the room has let in, so the
+   * sender's being in the room and no ban blocking them are the checks every change here gets, and the
+   * room answers `command.ran`, or an `error`, with `commandId`, which the tab makes up, while the bot's
+   * answer reaches the room as any message of its does.
+   */
+  | { type: "command.run"; commandId: string; name: string; text: string }
+  /**
+   * One of the workspace's message shortcuts, run on the message `messageId` is, as a message's More
+   * actions offers one. It goes on the room's own socket, as a `command.run` does, so whoever picked it
+   * being in the room and no ban blocking them are the checks every change here gets, and the room
+   * reports it to the bot the shortcut invokes, delivering the message as Slack tells a message_action,
+   * and answers `shortcut.ran`, or an `error`, with `shortcutId`, while the bot's answer reaches the
+   * room as any message of its does.
+   */
+  | { type: "shortcut.run"; shortcutId: string; messageId: string }
   | { type: "ping" };
 
 /**
@@ -1649,15 +2058,23 @@ export type ServerFrame =
   | { type: "message.deleted"; messageId: string; seq: number }
   | { type: "boost.created"; boost: Boost; seq: number }
   | { type: "boost.deleted"; boostId: string; messageId: string; seq: number }
+  /** A message was pinned to the room, by `by`. */
+  | { type: "pin.created"; messageId: string; by: User; seq: number }
+  /** A message's pin was taken away, by `by`. */
+  | { type: "pin.deleted"; messageId: string; by: User; seq: number }
+  /** Answers pins.list: the room's pinned messages, oldest pinned first. */
+  | { type: "pins.listed"; pins: PinnedMessage[] }
   /** Someone opened the room who didn't have it open already, in another tab. */
   | { type: "presence.joined"; user: User }
   /** Someone closed the last tab they had the room open in, which stops their typing, too. */
   | { type: "presence.left"; userId: UserId }
   /**
    * Someone started or stopped typing: in the room's composer, or, with `threadId`, in that thread, where
-   * only @ember types, as it answers there.
+   * only @ember types, as it answers there. @ember or an agent that's typing as it answers says, with
+   * `doing`, what it's doing meanwhile, if it's more than writing, in words that follow its name, as
+   * "is using Digg: digg_get_feed" does. Only the room says it.
    */
-  | { type: "typing"; user: User; typing: boolean; threadId?: string }
+  | { type: "typing"; user: User; typing: boolean; threadId?: string; doing?: string }
   /** Answers history.before: the page before `before`, oldest first, and whether there are older ones still. */
   | { type: "history"; before: string; messages: Message[]; hasMore: boolean }
   /** Answers history.after: the page after `after`, oldest first, and whether there are newer ones still. */
@@ -1675,35 +2092,76 @@ export type ServerFrame =
   | { type: "thread.history"; parentId: string; before: string; messages: Message[]; hasMore: boolean }
   /** Answers card.click once the bot has answered the click: what it does to the room, if anything, comes as any change does. */
   | { type: "card.clicked"; clickId: string }
+  /** Answers command.run once the bot has answered the command: the bot's answer comes as any message of its does. */
+  | { type: "command.ran"; commandId: string }
+  /** Answers shortcut.run once the bot has answered the shortcut: the bot's answer comes as any message of its does. */
+  | { type: "shortcut.ran"; shortcutId: string }
   /**
    * `failed` names the request that went wrong, when the error answers one, and `clientMessageId` or
-   * `clientMessageIds` the messages it was about, or `clickId` the click.
+   * `clientMessageIds` the messages it was about, `clickId` the click, `commandId` the command, or
+   * `shortcutId` the shortcut. `rewrite` says the room won't take a message for what it says, as one
+   * with a word Blocked words keeps out, which is its writer's to change and send again.
    */
-  | { type: "error"; message: string; clientMessageId?: string; clientMessageIds?: string[]; clickId?: string; failed?: ClientFrame["type"] }
+  | { type: "error"; message: string; clientMessageId?: string; clientMessageIds?: string[]; clickId?: string; commandId?: string; shortcutId?: string; failed?: ClientFrame["type"]; rewrite?: true }
   | { type: "pong" };
 
 /**
- * What a tab sends on its workspace socket (`/api/socket`): only pings, which the runtime answers
- * without waking the Workspace.
+ * A reminder someone asked for on a message, which comes back to them at `remindAt`. What the message
+ * said is kept as it was when the reminder was set, so it comes back whatever has happened to the
+ * message or its room since, as Slack's keep their text.
  */
-export type WorkspaceClientFrame = { type: "ping" };
+export interface Reminder {
+  id: string;
+  /** The room the message is in, which the person reminding was in when they set it. */
+  roomId: RoomId;
+  /** The message the reminder is about, which may be gone or edited by the time it comes. */
+  messageId: string;
+  /** The message's parent, for a reply: its reminder opens the thread at the reply. */
+  parentId?: string;
+  /** Who wrote the message, named as they were when the reminder was set. */
+  creator: User;
+  /** The start of the message's plain text, as it was when the reminder was set. */
+  excerpt: string;
+  /** When the reminder comes back, in the past once it's due. */
+  remindAt: string;
+}
+
+/**
+ * What a tab sends on its workspace socket (`/api/socket`): pings, which the runtime answers without
+ * waking the Workspace; whether its person is using it, once it's welcomed and as they stop using it or
+ * come back to it (`presence.active`), which counts the tab in use from when it connects until it says
+ * otherwise, and has it hear who's active (`presence`) once it has said; and whether the tab is shown,
+ * as that changes, so that the Workspace knows whether its person has Ember in view anywhere.
+ */
+export type WorkspaceClientFrame = { type: "ping" } | { type: "presence.active"; active: boolean } | { type: "presence.visible"; visible: boolean };
 
 /** What the Workspace sends on a tab's workspace socket. */
 export type WorkspaceServerFrame =
-  /** Sent as the Workspace lets the socket in: who its session signs in, and the workspace as it is then. */
-  | { type: "welcome"; you: Me; account: Account }
   /**
-   * A room of theirs has a message they haven't seen, which marks it unread, as of `at`, when that message
-   * came. Sent only to the person marked, as their mark changes.
+   * Sent as the Workspace lets the socket in: who its session signs in, the workspace as it is then,
+   * and when this person's hush of push notifications (Do not disturb) ends, or null while it doesn't,
+   * which the rail shows by the crescent on their avatar. Left out by a worker that sends it not yet.
    */
-  | { type: "room.unread"; roomId: RoomId; at: string }
+  | { type: "welcome"; you: Me; account: Account; dndUntil?: string | null }
+  /**
+   * A room of theirs has a message they haven't seen, which marks it unread, as of `at`, when the first
+   * of those came. Sent only to the person marked, as their mark changes, and in a DM, as each message
+   * comes, with how many have come since it was marked.
+   */
+  | { type: "room.unread"; roomId: RoomId; at: string; count?: number }
   /** They've read a room marked unread, in this tab or another. */
   | { type: "room.read"; roomId: RoomId }
   /**
    * Someone changed, as the people directory now lists them: they changed their profile, or an
-   * administrator gave them another role, removed them, banned them or lifted their ban. Sent to everyone.
+   * administrator gave them another role, removed them, banned them or lifted their ban. Sent to everyone,
+   * but of an AI agent only administrators' direct messages reach, which only administrators hear.
    */
   | { type: "user.updated"; user: DirectoryUser }
+  /**
+   * An AI agent the people directory no longer lists to them, as an administrator has kept it to
+   * administrators' direct messages. Sent to everyone but administrators.
+   */
+  | { type: "user.gone"; userId: UserId }
   /**
    * A room of theirs as it is now, sent to everyone in it when it's made, renamed, given another icon,
    * opened to everyone or made private, and to whoever a change puts in it, and to everyone in a DM
@@ -1722,8 +2180,39 @@ export type WorkspaceServerFrame =
    * the huddle or not, as people join it and leave, and to whoever a change puts in a room with one going on.
    */
   | { type: "room.huddle"; roomId: RoomId; huddle: LiveHuddle | null }
+  /**
+   * Someone in the huddle of a room of theirs, `by`, invites them into it, which rings in every tab they
+   * have open, for them to join from or decline, until they answer it in one, the huddle is over, or
+   * half a minute has passed. Sent only to the people invited, each of whom is in the room and hears
+   * its @mentions of them or more.
+   */
+  | { type: "huddle.invited"; roomId: RoomId; by: UserId }
+  /** They've answered an invitation into a room's huddle, joining from it or declining it, in this tab or another, so it rings in none of them from now on. */
+  | { type: "huddle.answered"; roomId: RoomId }
+  /** They've turned one of a huddle's sounds on or off on their profile, in this tab or another: the ones they hear now. */
+  | { type: "huddle.sounds"; sounds: HuddleSounds }
+  /**
+   * The huddles the Huddles page lists for a room of theirs have changed: one is over, or one that was
+   * goes on after all, has gained or lost a reply, or has had its message deleted. It names none, so the
+   * page loads its list again. Sent to everyone in the room.
+   */
+  | { type: "huddles.changed" }
   /** They've starred or unstarred a room, in this tab or another: their stars as they are now. */
   | { type: "favorites.changed"; favorites: Favorites }
+  /**
+   * Their hush of push notifications (Do not disturb) is now until `dndUntil`, or no more: they set it
+   * or lifted it, in this tab or another. Sent to their own workspace sockets alone, so their other
+   * tabs lay the crescent on their avatar or take it away as it goes.
+   */
+  | { type: "dnd.changed"; dndUntil: string | null }
+  /** They've blocked or unblocked someone, in this tab or another: whom they've blocked now. */
+  | { type: "blocks.changed"; blocks: Blocks }
+  /**
+   * Someone has made a report, or an administrator has handled one, or someone reported has deleted their
+   * account, which clears what the reports of them kept: how many open reports whoever it's sent to sees
+   * now, which never include the reports of them. Sent to the administrators.
+   */
+  | { type: "reports.changed"; open: number }
   /** They've given a room of theirs another notification level, in this tab or another. */
   | { type: "room.involvement"; roomId: RoomId; involvement: Involvement }
   /** They've dismissed the welcome card, in this tab or another, so their sidebar has no invitation from now on. */
@@ -1736,6 +2225,22 @@ export type WorkspaceServerFrame =
   | { type: "rooms.reordered" }
   /** An administrator changed the workspace's name, settings or custom CSS, which every page applies at once. Sent to everyone. */
   | { type: "account.updated"; account: Account }
+  /**
+   * A reminder of theirs has come due. Sent to every tab they have open at the moment it comes, and,
+   * when they weren't near Ember then, pushed to their browsers besides; a tab that opens later hears
+   * of it from `GET /api/reminders`, which lists what they haven't dismissed yet.
+   */
+  | { type: "reminder.due"; reminder: Reminder }
+  /** One of their reminders was dismissed, in this tab or another, and leaves every tab's corner. */
+  | { type: "reminder.dismissed"; id: string }
+  /**
+   * Who's active, with a tab open that they've used in the last ten minutes, as Slack counts it, and who's
+   * away otherwise: first everyone active, as the tab first says whether it's in use, and then whoever has
+   * become active or away since the last of these. Sent only to tabs that have said, and gathered over a
+   * moment, so that a deploy's reconnects tell of everyone in a few frames rather than one each: the
+   * first may be a moment behind, as the frame that follows it brings it up to date.
+   */
+  | { type: "presence"; active: UserId[]; away: UserId[] }
   | { type: "error"; message: string }
   | { type: "pong" };
 
@@ -1743,10 +2248,12 @@ export type WorkspaceServerFrame =
  * The revision of the room protocol the app speaks, which its room sockets' addresses name. The room
  * tells a tab running an older app to reload, and refuses its messages and edits: before revision 2,
  * tabs sent a message's text rather than its markup, which the room would now read as markup, before
- * revision 3, an edit dropped the message's mentions, and before revision 4, tabs knew nothing of
- * threads, and showed every reply in the room.
+ * revision 3, an edit dropped the message's mentions, before revision 4, tabs knew nothing of
+ * threads, and showed every reply in the room, and before revision 5, they knew nothing of pins,
+ * whose frames their room view has no case for, and an edit dropped a group's mention, which a tab
+ * that knew no groups detached as one of no one.
  */
-export const ROOM_PROTOCOL = 4;
+export const ROOM_PROTOCOL = 5;
 
 /** What a room socket's address tells the room about the tab opening it. */
 export interface RoomSocketParams {
@@ -1762,13 +2269,21 @@ export interface RoomSocketParams {
    * room has it. Named only until the first welcome, since a socket that connects again keeps the tab's page.
    */
   around?: string;
+  /**
+   * Set on a socket that shows a part of the room apart from its timeline, as a huddle shows its thread
+   * beside the people in it: its tab's person views the thread it opens, and isn't in the room for it.
+   * The room doesn't count them among who's here, isn't read through it, and doesn't take them to be
+   * there to see what's said in it.
+   */
+  apart?: true;
 }
 
 /** The query that carries `params` on a room socket's address, with the revision of the protocol the tab speaks. */
-export const roomSocketQuery = ({ visible, since, around }: RoomSocketParams) =>
+export const roomSocketQuery = ({ visible, since, around, apart }: RoomSocketParams) =>
   `?visible=${visible ? 1 : 0}&protocol=${ROOM_PROTOCOL}` +
   (since === undefined ? "" : `&since=${since}`) +
-  (around === undefined ? "" : `&around=${encodeURIComponent(around)}`);
+  (around === undefined ? "" : `&around=${encodeURIComponent(around)}`) +
+  (apart ? "&apart=1" : "");
 
 /** The part of a `URLSearchParams` that reading a socket's address needs, which the protocol, made for every runtime, names itself. */
 interface SearchParams {
@@ -1790,11 +2305,29 @@ export const parseRoomSocketParams = (query: SearchParams): RoomSocketParams & {
   visible: query.get("visible") !== "0",
   since: parseSeq(query.get("since")),
   around: messageIdOf(query.get("around")),
+  apart: query.get("apart") === "1" || undefined,
   protocol: Number(query.get("protocol")) || 1,
 });
 
-/** The most characters a message's plain text can have. */
-export const MAX_MESSAGE_LENGTH = 10_000;
+/** What a workspace socket's address tells the Workspace about the tab opening it. */
+export interface WorkspaceSocketParams {
+  /** Whether the tab is shown, which `presence.visible` frames update. */
+  visible: boolean;
+}
+
+/** The query that carries `params` on a workspace socket's address. */
+export const workspaceSocketQuery = ({ visible }: WorkspaceSocketParams) => `?visible=${visible ? 1 : 0}`;
+
+/**
+ * What a workspace socket's address says about its tab, as `workspaceSocketQuery` wrote it. A tab that
+ * doesn't say doesn't count as shown, where one on a room's socket does: an open tab runs the app it
+ * loaded, which once said nothing here, and counting it would keep an invitation's push from someone
+ * who has such a tab open and isn't at it.
+ */
+export const parseWorkspaceSocketParams = (query: SearchParams): WorkspaceSocketParams => ({ visible: query.get("visible") === "1" });
+
+/** The most characters a message's plain text can have: Slack's most, room for a long paste. */
+export const MAX_MESSAGE_LENGTH = 40_000;
 /** What the room says of a message with more, which the app says itself rather than send one. */
 export const MESSAGE_TOO_LONG = `Messages can be up to ${MAX_MESSAGE_LENGTH.toLocaleString("en-US")} characters.`;
 /** Whether a message whose plain text is `plainText` is longer than the room takes. */
@@ -1803,6 +2336,11 @@ export const isMessageTooLong = (plainText: string) => plainText.length > MAX_ME
 export const MAX_MESSAGE_HTML_LENGTH = 100_000;
 /** As long as Campfire's `boosts.content` column can be (`limit: 16`, db/schema.rb). */
 export const MAX_BOOST_LENGTH = 16;
+/**
+ * How long after a message is posted the room still adds the preview of its link that its sender's tab
+ * sends (`message.preview`): well past the most an unfurl takes.
+ */
+export const LATE_PREVIEW_MS = 60_000;
 /**
  * Campfire's page of messages (`Message::PAGE_SIZE`): the newest a room opens on, what each page of
  * history adds before or after the timeline, and how many a permalink shows on either side of its
@@ -1843,6 +2381,20 @@ export const MAX_BIO_LENGTH = 200;
  * of its history for everyone in it.
  */
 export const MAX_USER_NAME_LENGTH = 100;
+/** The longest name a slash command can have, where Slack's is 32. */
+export const MAX_COMMAND_NAME_LENGTH = 32;
+/** What a command's name is once it's kept: letters, numbers, dashes and underscores, one case. */
+const COMMAND_NAME = new RegExp(`^[a-z0-9_-]{1,${MAX_COMMAND_NAME_LENGTH}}$`);
+
+/**
+ * A command's name as it's kept: without the leading "/" typing it has, and lowercased, as Slack keeps
+ * its commands' names. Null unless the rest is 1 to `MAX_COMMAND_NAME_LENGTH` letters, numbers, dashes
+ * and underscores, which is all a name can be once it's one case.
+ */
+export function commandNameOf(given: string): string | null {
+  const name = given.trim().replace(/^\//, "").toLowerCase();
+  return COMMAND_NAME.test(name) ? name : null;
+}
 /** No deliverable address is longer (RFC 5321's path limit). */
 export const MAX_EMAIL_ADDRESS_LENGTH = 254;
 export const NAME_TOO_LONG = `Name must be at most ${MAX_USER_NAME_LENGTH} characters`;
@@ -1852,6 +2404,8 @@ export const ASSISTANT_ID: UserId = "ember";
 /** @ember's name, which nobody else can take (`isReservedName`). */
 export const ASSISTANT_NAME = "Ember";
 export const NAME_RESERVED = `${ASSISTANT_NAME} is the AI assistant's name. Choose another.`;
+/** What saving a profile whose name is another guest's says: their stay is what signs them in with it. */
+export const guestsNameTaken = (name: string) => `${name.trim()} is another guest's way in. Choose another.`;
 
 /**
  * Whether `name` is @ember's, which nobody can take, whether or not Ember AI is on, so that nobody passes
@@ -1873,6 +2427,32 @@ export function sameName(name: string, other: string): boolean {
 /** `name` as `sameName` compares it. */
 function nameAsShown(name: string): string {
   return name.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/^[\s@]+|\s+$/g, "").toLowerCase();
+}
+
+/** The most characters a username can have. */
+export const MAX_USERNAME_LENGTH = 21;
+/** What a username can be: lowercase letters, numbers, periods, hyphens and underscores, starting with a letter or number. */
+const USERNAME = /^[a-z0-9][a-z0-9._-]*$/;
+export const USERNAME_REFUSED = `Usernames have up to ${MAX_USERNAME_LENGTH} lowercase letters, numbers, periods, hyphens and underscores, and start with a letter or number.`;
+export const USERNAME_TAKEN = "That username is taken. Choose another.";
+
+/**
+ * `typed` as Ember keeps a username: in Unicode's compatible forms, as fullwidth letters become ASCII,
+ * without spaces or the @ before it, in lowercase. Whether it can be one is `isUsername`'s to say.
+ */
+export const usernameOf = (typed: string) => typed.normalize("NFKC").replace(/\s/g, "").replace(/^@+/, "").toLowerCase();
+
+/** Whether `username`, as `usernameOf` keeps it, can be someone's. */
+export const isUsername = (username: string) => username.length <= MAX_USERNAME_LENGTH && USERNAME.test(username);
+
+/**
+ * The username someone called `name` starts with, before a number makes it nobody else's: its letters
+ * and numbers, without their accents, in lowercase, leaving room for four digits after them, or "member"
+ * for a name with none, as one in another script has.
+ */
+export function usernameFrom(name: string): string {
+  const letters = name.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return letters.slice(0, MAX_USERNAME_LENGTH - 4) || "member";
 }
 
 export const EMAIL_ADDRESS_TOO_LONG = `Email address must be at most ${MAX_EMAIL_ADDRESS_LENGTH} characters`;
@@ -1898,6 +2478,18 @@ const userIds = (v: unknown): v is UserId[] => Array.isArray(v) && v.length <= M
 
 /** Markup no longer than `MAX_MESSAGE_HTML_LENGTH`, or null. Whether it holds a message is the room's to read. */
 const markup = (v: unknown): string | null => (typeof v === "string" && v.length <= MAX_MESSAGE_HTML_LENGTH ? v : null);
+
+/**
+ * A link's preview, as `POST /api/unfurl` answers one, with a title and an address that aren't blank, and
+ * none of it longer than a message's markup, or null. What the room can keep of it is the room's to read.
+ */
+function linkPreview(v: unknown): LinkPreview | null {
+  if (typeof v !== "object" || v === null) return null;
+  const { title, url, image, description } = v as Record<string, unknown>;
+  const field = (value: unknown): value is string => typeof value === "string" && value.length <= MAX_MESSAGE_HTML_LENGTH;
+  if (!field(title) || !field(url) || !field(description) || !(image === null || field(image))) return null;
+  return title.trim() !== "" && url.trim() !== "" ? { title, url, image, description } : null;
+}
 
 /** Trimmed, non-empty text no longer than `max`, or null. */
 const text = (v: unknown, max: number): string | null => {
@@ -1932,6 +2524,10 @@ export function parseClientFrame(raw: string): ClientFrame | null {
       const body = markup(f.body);
       return id(f.messageId) && body !== null ? { type: f.type, messageId: f.messageId, body } : null;
     }
+    case "message.preview": {
+      const preview = linkPreview(f.preview);
+      return id(f.clientMessageId) && preview ? { type: f.type, clientMessageId: f.clientMessageId, preview } : null;
+    }
     case "message.delete":
       return id(f.messageId) ? { type: f.type, messageId: f.messageId } : null;
     case "boost.create": {
@@ -1940,6 +2536,11 @@ export function parseClientFrame(raw: string): ClientFrame | null {
     }
     case "boost.delete":
       return id(f.boostId) ? { type: f.type, boostId: f.boostId } : null;
+    case "pin.create":
+    case "pin.delete":
+      return id(f.messageId) ? { type: f.type, messageId: f.messageId } : null;
+    case "pins.list":
+      return { type: f.type };
     case "history.before":
       return id(f.before) ? { type: f.type, before: f.before, limit: pageLimit(f.limit) } : null;
     case "history.after":
@@ -1966,6 +2567,15 @@ export function parseClientFrame(raw: string): ClientFrame | null {
       const { blockId, value } = f;
       return { type: f.type, clickId: f.clickId, messageId: f.messageId, actionId: f.actionId, ...(blockId !== undefined && { blockId }), ...(value !== undefined && { value }) };
     }
+    case "command.run": {
+      if (!id(f.commandId)) return null;
+      const name = commandNameOf(typeof f.name === "string" ? f.name : "");
+      // Whatever was typed after the command goes as it was typed, its spaces at either end spared, as Slack sends `text`.
+      const text = typeof f.text === "string" && f.text.length <= MAX_MESSAGE_HTML_LENGTH ? f.text.trim() : null;
+      return name && text !== null ? { type: f.type, commandId: f.commandId, name, text } : null;
+    }
+    case "shortcut.run":
+      return id(f.shortcutId) && id(f.messageId) ? { type: f.type, shortcutId: f.shortcutId, messageId: f.messageId } : null;
     case "typing.start":
     case "typing.stop":
     case "ping":
@@ -1977,7 +2587,10 @@ export function parseClientFrame(raw: string): ClientFrame | null {
 
 /** Parses an untrusted frame from a workspace socket. Returns null for anything malformed. */
 export function parseWorkspaceClientFrame(raw: string): WorkspaceClientFrame | null {
-  return parseObject(raw)?.type === "ping" ? { type: "ping" } : null;
+  const f = parseObject(raw);
+  if (f?.type === "ping") return { type: "ping" };
+  if (f?.type === "presence.active") return typeof f.active === "boolean" ? { type: "presence.active", active: f.active } : null;
+  return f?.type === "presence.visible" && typeof f.visible === "boolean" ? { type: "presence.visible", visible: f.visible } : null;
 }
 
 /**
@@ -2036,7 +2649,9 @@ export function parseRoomChanges(data: unknown): RoomChanges | string {
   if (name === null) return `Name must be 1 to ${MAX_ROOM_NAME_LENGTH} characters`;
   const icon = iconChoice(r.icon);
   if (icon === null) return ICON_REFUSED;
-  const changes = { name, icon };
+  const { huddles } = r;
+  if (huddles !== undefined && typeof huddles !== "boolean") return "Huddles must be true or false";
+  const changes = { name, icon, huddles };
   if (r.kind === undefined) return changes;
   if (r.kind === "open") return { ...changes, kind: r.kind };
   if (r.kind !== "closed") return 'Kind must be "open" or "closed"';
@@ -2045,6 +2660,38 @@ export function parseRoomChanges(data: unknown): RoomChanges | string {
 
 /** Whether `data` is a JSON object: an array is an object too, but not one that can name a change. */
 const isJsonObject = (data: unknown): data is Record<string, unknown> => typeof data === "object" && data !== null && !Array.isArray(data);
+
+/**
+ * A group's name a request names, or null for one refused: as `text` reads it, and no longer than the
+ * limit as the Workspace keeps it too, since lowercasing a name can lengthen it (`İ` folds to i and
+ * its dot), which a name sent within the limit could otherwise outgrow once kept.
+ */
+const sentGroupName = (value: unknown): string | null => {
+  const name = text(value, MAX_GROUP_NAME_LENGTH);
+  return name !== null && name.toLowerCase().length <= MAX_GROUP_NAME_LENGTH ? name : null;
+};
+
+/**
+ * Parses an untrusted request to make a group. Returns why it's refused instead of the group. The name
+ * is kept as it's sent; the Workspace lowercases it, so that two names that differ only in capitals
+ * can't both be kept.
+ */
+export function parseNewUserGroup(data: unknown): NewUserGroup | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const name = sentGroupName(data.name);
+  if (!name) return `Name must be 1 to ${MAX_GROUP_NAME_LENGTH} characters`;
+  const memberIds = data.memberIds ?? [];
+  return userIds(memberIds) ? { name, memberIds } : `Members must be a list of at most ${MAX_LISTED_USERS} user ids`;
+}
+
+/** Parses an untrusted change to a group. Returns why it's refused instead of the changes. */
+export function parseUserGroupChanges(data: unknown): UserGroupChanges | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const name = data.name === undefined ? undefined : sentGroupName(data.name);
+  if (name === null) return `Name must be 1 to ${MAX_GROUP_NAME_LENGTH} characters`;
+  if (data.memberIds === undefined) return name === undefined ? "Expected a name or members to change" : { name };
+  return userIds(data.memberIds) ? { name, memberIds: data.memberIds } : `Members must be a list of at most ${MAX_LISTED_USERS} user ids`;
+}
 
 /**
  * Parses an untrusted request to start a DM. Returns why it's refused instead of the DM. Naming nobody,
@@ -2056,14 +2703,61 @@ export function parseNewDirect(data: unknown): NewDirect | string {
   return userIds(named) ? { userIds: named } : `People must be a list of at most ${MAX_LISTED_USERS} user ids`;
 }
 
+/** How long a name the guest sign-in takes, which a guest of one room signs in with (`MAX_NAME_LENGTH` in the Worker, the sign-in form's own cap). */
+export const MAX_GUEST_NAME_LENGTH = 48;
+
+/** What `POST /api/rooms/<id>/guests` asks for: the guest's name, and when their stay ends, as an ISO time. */
+export interface NewGuest {
+  name: string;
+  until: string;
+}
+
+/**
+ * Parses an untrusted stay to add a guest for. Returns why it's refused instead of the stay. The name
+ * is kept as typed, as the sign-in keeps it, and whether the time has passed, the server checks once
+ * it knows who's asking, by its own clock.
+ */
+export function parseNewGuest(data: unknown): NewGuest | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const name = typeof data.name === "string" ? data.name.trim() : "";
+  if (!name) return `Name must be 1 to ${MAX_GUEST_NAME_LENGTH} characters`;
+  if (name.length > MAX_GUEST_NAME_LENGTH) return `Name must be 1 to ${MAX_GUEST_NAME_LENGTH} characters`;
+  if (isReservedName(name)) return NAME_RESERVED;
+  const until = aTime(data.until);
+  if (until === null) return "Until must be a time";
+  return { name, until };
+}
+
+/** What `PUT /api/rooms/<id>/guests/<user id>` asks for: when to extend their stay until, as an ISO time. */
+export interface GuestChange {
+  until: string;
+}
+
+/** Parses an untrusted change to when a guest's stay ends, as `parseNewGuest` does its time. */
+export function parseGuestChange(data: unknown): GuestChange | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const until = aTime(data.until);
+  if (until === null) return "Until must be a time";
+  return { until };
+}
+
+/** The time `v` gives, as given, or null unless it's a non-empty one a date can read. */
+function aTime(v: unknown): string | null {
+  return typeof v === "string" && v.trim() !== "" && !Number.isNaN(Date.parse(v)) ? v : null;
+}
+
 /** The settings `PATCH /api/account` changes, each with the name workspace settings give it. */
 const SETTING_NAMES: Record<keyof AccountSettings, string> = {
   hideTranslationButtons: "Hide translation buttons",
   restrictRoomCreation: "Must be admin to create new rooms",
+  huddleCameras: "Cameras",
+  huddleScreens: "Screen sharing",
   joinLink: "Join link",
   openSignUp: "Open",
   memberfulJoin: "Memberful",
   memberfulSignIn: "Members only",
+  ssoJoin: "Single sign-on",
+  ssoSignIn: "SSO only",
   emailDomainSignUp: "Email domain",
 };
 
@@ -2200,8 +2894,6 @@ const MAILBOX_ADDRESS =
 
 /** Whether `address` is an email address Ember can send from or to, as `MAILBOX_ADDRESS` has them, no longer than Ember keeps. */
 export const isEmailAddress = (address: string) => address.length <= MAX_EMAIL_ADDRESS_LENGTH && MAILBOX_ADDRESS.test(address);
-/** A name, in quotes or not, then an address in angle brackets. */
-const NAMED_MAILBOX = /^(.*?)\s*<([^<>]*)>$/s;
 /** What a From line's name can't hold: line breaks and other control characters, quotes, backslashes and angle brackets. */
 const NOT_IN_A_NAME = /[\u0000-\u001f\u007f"\\<>]/;
 /** What has a From line put its name in quotes, since the line's syntax would read it otherwise. */
@@ -2211,16 +2903,28 @@ const QUOTED_IN_A_NAME = /[()[\]:;@,.]/;
 export const EMAIL_FROM_REFUSED = "From must be an email address, such as ember@example.com, or a name and one, such as Ember <ember@example.com>";
 
 /**
+ * The name, in quotes or not, and the address in angle brackets that `typed` ends with, each as typed,
+ * or null when it isn't written so. Split at its last "<" rather than by a pattern, which would try
+ * every place the name could end, and so take a long run of spaces the square of its length to refuse.
+ */
+function namedMailboxOf(typed: string): { name: string; address: string } | null {
+  const open = typed.lastIndexOf("<");
+  if (open === -1 || !typed.endsWith(">")) return null;
+  const address = typed.slice(open + 1, -1);
+  return address.includes(">") ? null : { name: typed.slice(0, open), address };
+}
+
+/**
  * The mailbox `text` gives, as an administrator types a From address: an email address, or a name, in
  * quotes or not, and an address in angle brackets. Null for anything else, as for an address Ember can't
  * send from, or a name a From line can't hold.
  */
 export function mailboxOf(text: string): Mailbox | null {
   const typed = text.trim();
-  const named = NAMED_MAILBOX.exec(typed);
-  const given = named?.[1]?.trim() ?? "";
+  const named = namedMailboxOf(typed);
+  const given = named?.name.trim() ?? "";
   const name = /^".*"$/s.test(given) ? given.slice(1, -1).trim() : given;
-  const address = named ? named[2]!.trim() : typed;
+  const address = named ? named.address.trim() : typed;
   if (!isEmailAddress(address)) return null;
   if (name.length > MAX_USER_NAME_LENGTH || NOT_IN_A_NAME.test(name)) return null;
   return { name: name || null, address };
@@ -2324,12 +3028,12 @@ function navigationIconsOf(data: unknown): NavigationIconChanges | undefined {
  * is saved as typed, even blank. The tagline is kept on one line without space at its ends, and blank is
  * none. Each setting is true or false, and one it doesn't know is refused. A custom domain is a host or
  * null, which the Worker then checks is the address the request came to. Navigation icons are as
- * `navigationIconsOf` reads them, the From address as `emailFromOf` does, and Email domain's domains as
- * `emailDomainsOf` does.
+ * `navigationIconsOf` reads them, the From address as `emailFromOf` does, Email domain's domains as
+ * `emailDomainsOf` does, and the blocked words as `parseBlockedWords` does.
  */
 export function parseAccountChanges(data: unknown): AccountChanges | string {
   if (!isJsonObject(data)) return "Expected a JSON object";
-  const { name, tagline, settings, customDomain, navigationIcons, emailFrom, emailDomains } = data;
+  const { name, tagline, settings, customDomain, navigationIcons, emailFrom, emailDomains, blockedWords } = data;
   if (name !== undefined && (typeof name !== "string" || name.length > MAX_ACCOUNT_NAME_LENGTH)) return `Name must be at most ${MAX_ACCOUNT_NAME_LENGTH} characters`;
   const kept = typeof tagline === "string" ? taglineOf(tagline) : undefined;
   if (tagline !== undefined && (kept === undefined || kept.length > MAX_TAGLINE_LENGTH)) return TAGLINE_TOO_LONG;
@@ -2341,6 +3045,8 @@ export function parseAccountChanges(data: unknown): AccountChanges | string {
   if (emailFrom !== undefined && from === undefined) return EMAIL_FROM_REFUSED;
   const domains = emailDomainsOf(emailDomains);
   if (emailDomains !== undefined && domains === undefined) return EMAIL_DOMAINS_REFUSED;
+  const blocked = blockedWords === undefined ? undefined : parseBlockedWords(blockedWords);
+  if (blocked !== undefined && "error" in blocked) return blocked.error;
   const changes: AccountChanges = {
     ...(name !== undefined && { name }),
     ...(kept !== undefined && { tagline: kept }),
@@ -2348,6 +3054,7 @@ export function parseAccountChanges(data: unknown): AccountChanges | string {
     ...(icons !== undefined && { navigationIcons: icons }),
     ...(from !== undefined && { emailFrom: from }),
     ...(domains !== undefined && { emailDomains: domains }),
+    ...(blocked !== undefined && { blockedWords: blocked }),
   };
   if (settings === undefined) return changes;
   if (!isJsonObject(settings)) return "Settings must be a JSON object";
@@ -2395,28 +3102,68 @@ export function parseInvolvementChange(data: unknown): Involvement | null {
 
 const PROFILE_FIELDS = {
   name: "Name",
+  username: "Username",
   emailAddress: "Email address",
   password: "Password",
   bio: "Bio",
   currentPassword: "Current password",
   pushSubscriptionEndpoint: "Push subscription endpoint",
-} as const satisfies Record<keyof ProfileChanges, string>;
+} as const satisfies Record<Exclude<keyof ProfileChanges, "fieldValues" | "mood">, string>;
+
+/**
+ * Parses an untrusted mood someone wears beside their name. Returns why it's refused instead. The emoji
+ * and the words are both wanted: a mood without either is none, which taking it off is for. The clear
+ * time is kept as the instant its text names, written canonically, not as it was written.
+ */
+export function parseMood(data: unknown): PersonMood | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const { emoji, text, clearAt } = data as Record<string, unknown>;
+  if (typeof emoji !== "string" || emoji === "") return "Emoji is required";
+  if (emoji.length > MAX_MOOD_EMOJI_LENGTH) return `Emoji must be at most ${MAX_MOOD_EMOJI_LENGTH} characters`;
+  if (typeof text !== "string" || text === "") return "A few words are required";
+  if (text.length > MAX_MOOD_TEXT_LENGTH) return `Words must be at most ${MAX_MOOD_TEXT_LENGTH} characters`;
+  if (clearAt !== null && typeof clearAt !== "string") return "Clear time must be a time or null";
+  if (typeof clearAt === "string") {
+    // A time's text is read loosely, so what a browser tolerates could be padded and absurd while naming
+    // a fine instant. Save the instant it names, as the canonical UTC ISO time, and refuse what names none.
+    const parsed = Date.parse(clearAt);
+    if (!Number.isFinite(parsed)) return "Clear time isn't a time";
+    return { emoji, text, clearAt: new Date(parsed).toISOString() };
+  }
+  return { emoji, text, clearAt };
+}
 
 /**
  * Parses an untrusted change to your profile. Returns why it's refused instead. Each field is saved as
  * typed, even a blank name. The server keeps the form's limits too: a new password from the 8 characters
+ * first run takes, to the 72 sign-in can take, and a 200-character bio. The mood comes as null to take
+ * it off, or an emoji, a few words and an optional clear time.
+ * typed, even a blank name, but a username, which is kept as `usernameOf` keeps one, and refused unless
+ * it's blank or can be one. The server keeps the form's limits too: a new password from the 8 characters
  * first run takes, to the 72 sign-in can take, and a 200-character bio.
  */
 export function parseProfileChanges(data: unknown): ProfileChanges | string {
   if (!isJsonObject(data)) return "Expected a JSON object";
   const changes: ProfileChanges = {};
-  for (const [field, label] of Object.entries(PROFILE_FIELDS) as [keyof ProfileChanges, string][]) {
+  for (const [field, label] of Object.entries(PROFILE_FIELDS) as [Exclude<keyof ProfileChanges, "fieldValues" | "mood">, string][]) {
     const value = data[field];
     if (value === undefined) continue;
     if (typeof value !== "string") return `${label} must be text`;
     changes[field] = value;
   }
+  if (data.mood !== undefined) {
+    if (data.mood === null) changes.mood = null;
+    else {
+      const mood = parseMood(data.mood);
+      if (typeof mood === "string") return mood;
+      changes.mood = mood;
+    }
+  }
   if (changes.name !== undefined && changes.name.length > MAX_USER_NAME_LENGTH) return NAME_TOO_LONG;
+  if (changes.username !== undefined) {
+    changes.username = usernameOf(changes.username);
+    if (changes.username !== "" && !isUsername(changes.username)) return USERNAME_REFUSED;
+  }
   if (changes.emailAddress !== undefined && changes.emailAddress.length > MAX_EMAIL_ADDRESS_LENGTH) return EMAIL_ADDRESS_TOO_LONG;
   if (changes.password !== undefined && isPasswordTooLong(changes.password)) return PASSWORD_TOO_LONG;
   // A blank one keeps the password you have.
@@ -2425,7 +3172,47 @@ export function parseProfileChanges(data: unknown): ProfileChanges | string {
   if (changes.pushSubscriptionEndpoint !== undefined && changes.pushSubscriptionEndpoint.length > MAX_PUSH_ENDPOINT_LENGTH) {
     return `Endpoint can't be longer than ${MAX_PUSH_ENDPOINT_LENGTH} characters`;
   }
+  if (data.fieldValues !== undefined) {
+    if (!isJsonObject(data.fieldValues)) return PROFILE_FIELD_VALUES_REFUSED;
+    const fieldValues: Record<string, string> = {};
+    for (const [id, value] of Object.entries(data.fieldValues)) {
+      if (typeof value !== "string" || value.length > MAX_PROFILE_FIELD_VALUE_LENGTH) return PROFILE_FIELD_VALUES_REFUSED;
+      fieldValues[id] = value;
+    }
+    changes.fieldValues = fieldValues;
+  }
   return changes;
+}
+
+/**
+ * Parses an untrusted change to a profile field, as workspace settings sends it. The name is saved
+ * without the spaces at its ends. Returns why it's refused instead.
+ */
+export function parseProfileFieldChange(data: unknown): ProfileFieldChange | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const name = typeof data.name === "string" ? data.name.trim() : "";
+  if (!name || name.length > MAX_PROFILE_FIELD_NAME_LENGTH) return PROFILE_FIELD_NAME_REFUSED;
+  if (data.options === undefined || data.options === null) return { name, options: null };
+  if (!Array.isArray(data.options) || data.options.length === 0) return PROFILE_FIELD_OPTIONS_REFUSED;
+  const options: string[] = [];
+  for (const option of data.options) {
+    if (typeof option !== "string") return PROFILE_FIELD_OPTIONS_REFUSED;
+    const choice = option.trim();
+    if (!choice || choice.length > MAX_PROFILE_FIELD_VALUE_LENGTH) return PROFILE_FIELD_OPTIONS_REFUSED;
+    options.push(choice);
+  }
+  return options.length <= MAX_PROFILE_FIELD_OPTIONS ? { name, options } : PROFILE_FIELD_OPTIONS_REFUSED;
+}
+
+/**
+ * Parses an untrusted order of the workspace's profile fields: their ids, in the new order. Returns why
+ * it's refused instead.
+ */
+export function parseProfileFieldOrder(data: unknown): string[] | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const { ids } = data;
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) return "Field order must be a list of the fields' ids";
+  return new Set(ids).size === ids.length ? (ids as string[]) : "Field order must be a list of the fields' ids";
 }
 
 /**
@@ -2441,6 +3228,19 @@ export function parseMemberfulDisconnection(data: unknown): MemberfulDisconnecti
     return `Endpoint can't be longer than ${MAX_PUSH_ENDPOINT_LENGTH} characters`;
   }
   return { ...(currentPassword === undefined ? {} : { currentPassword }), ...(pushSubscriptionEndpoint === undefined ? {} : { pushSubscriptionEndpoint }) };
+}
+
+/**
+ * Parses an untrusted Delete my account. Returns why it's refused instead. Whether what's typed is your
+ * password, or your name, the server checks once it knows who's asking.
+ */
+export function parseAccountDeletion(data: unknown): AccountDeletion | string {
+  if (!isJsonObject(data)) return "Expected a JSON object";
+  const { currentPassword, name } = data;
+  if (currentPassword !== undefined && typeof currentPassword !== "string") return "Current password must be text";
+  if (name !== undefined && typeof name !== "string") return "Name must be text";
+  if (name !== undefined && name.length > MAX_USER_NAME_LENGTH) return NAME_TOO_LONG;
+  return { ...(currentPassword === undefined ? {} : { currentPassword }), ...(name === undefined ? {} : { name }) };
 }
 
 /**

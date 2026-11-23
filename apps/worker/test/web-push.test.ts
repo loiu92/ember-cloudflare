@@ -4,9 +4,9 @@ import { toBase64url, urlsafeDecode64 } from "../src/encoding";
 import type { Env } from "../src/env";
 import { DEFAULT_VAPID_SUBJECT, sendPushes } from "../src/push/delivery";
 import { webPush, type VapidKeys } from "../src/push/keys";
-import { encodedPush, MAX_BODY_BYTES, MAX_TITLE_BYTES, messagePayload, type PushPayload } from "../src/push/payload";
+import { encodedPush, INVITATION_TTL_SECONDS, invitationPayload, MAX_BODY_BYTES, MAX_TITLE_BYTES, messagePayload, type PushPayload } from "../src/push/payload";
 import { encryptPush, InvalidPushKeyError, PushArgumentError, vapidAuthorization } from "../src/push/web-push";
-import type { MessagePush } from "../src/workspace-store";
+import type { InvitationPush, MessagePush } from "../src/workspace-store";
 import recorded from "./fixtures/web_push_expected.json";
 import { gemMessage, pushBrowser } from "./support";
 
@@ -130,6 +130,15 @@ describe("What a push says", () => {
     expect(messagePayload("dm", { kind: "direct", name: null }, "David", "Hi")).toEqual({ title: "David", body: "Hi", path: "/rooms/dm" });
   });
 
+  it("titles an invitation's push with whoever invites, and says which room's huddle it's into unless it's a DM's, opening the room", () => {
+    expect(invitationPayload("launch", { kind: "closed", name: "Launch" }, "David")).toEqual({ title: "David", body: "Invites you to a huddle in Launch", path: "/rooms/launch" });
+    expect(invitationPayload("designers", { kind: "open", name: "Designers" }, "David")).toEqual({ title: "David", body: "Invites you to a huddle in Designers", path: "/rooms/designers" });
+    expect(invitationPayload("dm", { kind: "direct", name: null }, "David")).toEqual({ title: "David", body: "Invites you to a huddle", path: "/rooms/dm" });
+    // Cut short as a message's push is, should a name be too long for it.
+    expect(invitationPayload("dm", { kind: "direct", name: null }, "x".repeat(MAX_TITLE_BYTES + 1)).title).toBe(`${"x".repeat(MAX_TITLE_BYTES - 3)}…`);
+    expect(invitationPayload("launch", { kind: "closed", name: "é".repeat(2000) }, "David").body).toBe(`Invites you to a huddle in ${"é".repeat(1521)}…`);
+  });
+
   it("cuts a long title at 256 bytes and text at 3,072, as escaped JSON, between characters, with an ellipsis that fits", () => {
     const room = (name: string) => messagePayload("designers", { kind: "open", name }, "David", "");
     // Two-byte characters, a quote that escapes to two, then one-byte ones.
@@ -184,7 +193,7 @@ describe("Who gets a push", () => {
   it("sends each push to its subscription's push service as the gem does: encrypted for its browser, signed, urgent, kept for four weeks", async () => {
     const receiver = await pushBrowser();
     const { send, sent } = pushService();
-    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, receiver, 4])], anyone, send)).toEqual([]);
+    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, receiver, 4])], anyone, send)).toEqual({ gone: [], delivered: [1], failed: 0 });
 
     expect(sent).toHaveLength(1);
     const [[endpoint, init]] = sent as [[string, RequestInit]];
@@ -201,6 +210,22 @@ describe("Who gets a push", () => {
     expect(k).toBe((await keys()).publicKey);
     expect(claims).toMatchObject({ aud: "https://fcm.googleapis.com", sub: DEFAULT_VAPID_SUBJECT });
     expect(claims.exp - Date.now() / 1000).toBeGreaterThan(12 * 60 * 60 - 60);
+  });
+
+  it("has a push service keep an invitation's push as long as the invitation says, a minute, beside a message's four weeks, and as urgent", async () => {
+    const receiver = await pushBrowser();
+    const { send, sent } = pushService();
+    const invitation: InvitationPush = { ...messagePush(invitationPayload("dm", { kind: "direct", name: null }, "David"), ["https://fcm.googleapis.com/fcm/send/invitation", receiver, 2]), ttl: INVITATION_TTL_SECONDS };
+    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, ["https://fcm.googleapis.com/fcm/send/message", receiver]), invitation], anyone, send)).toEqual([]);
+
+    const headersTo = (label: string) => {
+      const { Authorization: _, ...headers } = sent.find(([endpoint]) => endpoint.endsWith(`/${label}`))![1].headers as Record<string, string>;
+      return headers;
+    };
+    expect(headersTo("message")).toEqual({ "Content-Type": "application/octet-stream", TTL: "2419200", Urgency: "high", "Content-Encoding": "aes128gcm" });
+    expect(headersTo("invitation")).toEqual({ "Content-Type": "application/octet-stream", TTL: "60", Urgency: "high", "Content-Encoding": "aes128gcm" });
+    const { plaintext } = await receiver.read(sent.find(([endpoint]) => endpoint.endsWith("/invitation"))![1].body as Uint8Array);
+    expect(JSON.parse(gemMessage(plaintext))).toEqual({ title: "David", options: { body: "Invites you to a huddle", icon: "/account/logo", data: { path: "/rooms/dm", badge: 2 } } });
   });
 
   it("names VAPID_SUBJECT as whom the push service may contact, when it's set", async () => {
@@ -225,7 +250,7 @@ describe("Who gets a push", () => {
       ["https://fcm.googleapis.com/fcm/send/3", receiver],
       ["https://fcm.googleapis.com/fcm/send/4", { p256dh: "dGVzdF9rZXk", auth: "dGVzdF9hdXRo" }],
     );
-    expect((await sendPushes(pushEnv(), [push], anyone, send)).sort()).toEqual([1, 2, 4]);
+    expect((await sendPushes(pushEnv(), [push], anyone, send)).gone.sort()).toEqual([1, 2, 4]);
     expect(sent.map(([endpoint]) => new URL(endpoint).pathname).sort()).toEqual(["/fcm/send/1", "/fcm/send/2", "/fcm/send/3"]);
     expect(log).not.toHaveBeenCalled();
   });
@@ -245,7 +270,7 @@ describe("Who gets a push", () => {
     ];
     for (const [status, statusText, kind] of answers) {
       const { send, sent } = pushService(() => new Response(null, { status, statusText }));
-      expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, receiver])], anyone, send)).toEqual([]);
+      expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, receiver])], anyone, send)).toEqual({ gone: [], delivered: [], failed: 1 });
       expect(sent).toHaveLength(1);
       expect(log).toHaveBeenLastCalledWith(`Error in WebPush::Pool.deliver: ${kind} host: fcm.googleapis.com, status: ${status}`);
     }
@@ -256,7 +281,7 @@ describe("Who gets a push", () => {
     await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, receiver])], anyone, failing(new TypeError("Network connection lost.")));
     expect(log).toHaveBeenLastCalledWith("Error in WebPush::Pool.deliver: SystemCallError Network connection lost.");
     const { send } = pushService();
-    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, { p256dh: "", auth: receiver.auth }])], anyone, send)).toEqual([]);
+    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, [ENDPOINT, { p256dh: "", auth: receiver.auth }])], anyone, send)).toEqual({ gone: [], delivered: [], failed: 1 });
     expect(log).toHaveBeenLastCalledWith("Error in WebPush::Pool.deliver: ArgumentError p256dh cannot be blank");
   });
 
@@ -264,7 +289,7 @@ describe("Who gets a push", () => {
     const { send, sent } = pushService();
     const receiver = await pushBrowser();
     const endpoints = ["https://attacker.example.com/collect", "https://fcm.googleapis.com:22/fcm/send/abc", "http://fcm.googleapis.com/fcm/send/abc", "https://evilfcm.googleapis.com.attacker.example/webhook"];
-    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, ...endpoints.map((endpoint) => [endpoint, receiver] as [string, typeof receiver]))], anyone, send)).toEqual([]);
+    expect(await sendPushes(pushEnv(), [messagePush(PAYLOAD, ...endpoints.map((endpoint) => [endpoint, receiver] as [string, typeof receiver]))], anyone, send)).toEqual({ gone: [], delivered: [1, 2, 3, 4], failed: 0 });
     expect(sent).toEqual([]);
   });
 
@@ -291,7 +316,7 @@ describe("Who gets a push", () => {
     expect(asked).toEqual([1, 2, 3, 4, 5, 6]);
     banned.add(7);
     release();
-    expect(await sending).toEqual([]);
+    expect(await sending).toEqual({ gone: [], delivered: [1, 2, 3, 4, 5, 6], failed: 0 });
     expect(asked).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(sent.map(([endpoint]) => new URL(endpoint).pathname)).toEqual([1, 2, 3, 4, 5, 6].map((i) => `/fcm/send/${i}`));
     expect(warn).toHaveBeenCalledExactlyOnceWith("push authorization failed for subscription 8: Error: The database's answer was lost");
@@ -316,7 +341,7 @@ describe("Who gets a push", () => {
   it("sends nothing while Web Push is off", async () => {
     const { send, sent } = pushService();
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(await sendPushes(pushEnv({ VAPID_PUBLIC_KEY: undefined, VAPID_PRIVATE_KEY: undefined }), [messagePush(PAYLOAD, [ENDPOINT, await pushBrowser()])], anyone, send)).toEqual([]);
+    expect(await sendPushes(pushEnv({ VAPID_PUBLIC_KEY: undefined, VAPID_PRIVATE_KEY: undefined }), [messagePush(PAYLOAD, [ENDPOINT, await pushBrowser()])], anyone, send)).toEqual({ gone: [], delivered: [], failed: 0 });
     expect(sent).toEqual([]);
   });
 });

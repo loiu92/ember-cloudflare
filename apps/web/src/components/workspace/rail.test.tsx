@@ -3,28 +3,32 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AccountContext } from "@/hooks/use-account";
-import { Rail, type Activity, type RailPage } from "./rail";
+import { Rail, type Activity, type RailPage, type Saved } from "./rail";
 import { OpenSearchContext } from "./search-box";
 
 const ada = { id: "u1", name: "Ada Lovelace", administrator: false };
 const activityOff: Activity = { on: false, unread: 0, onToggle: () => {} };
+const savedClosed: Saved = { on: false, count: 0, onToggle: () => {} };
 
-/** The rail for the page `current` names, as `me` sees it, with `newRelease` out since this Ember's. */
-const railAt = (current: RailPage, activity = activityOff, me = ada, onNewDirect = () => {}, newRelease: string | null = null) => (
-  <Rail me={me} workspaceName="Analytical Engines" current={current} activity={activity} newRelease={newRelease} onNewDirect={onNewDirect} />
+/** The rail for the page `current` names, as `me` sees it, with `newRelease` out since this Ember's, `dndUntil` while pushes are hushed, and `saved` beside Activity. */
+const railAt = (current: RailPage, activity = activityOff, me = ada, onNewDirect = () => {}, newRelease: string | null = null, dndUntil: string | null = null, saved = savedClosed) => (
+  <Rail me={me} workspaceName="Analytical Engines" current={current} activity={activity} dndUntil={dndUntil} saved={saved} newRelease={newRelease} onNewDirect={onNewDirect} />
 );
 
 afterEach(() => history.replaceState(null, "", "/"));
 
 describe("Rail", () => {
-  it("puts Home, DMs, Activity, Search, Workspace, appearance and your profile on the rail", () => {
+  it("puts Back and Forward, Home, DMs, Activity, Search, Workspace, appearance and your profile on the rail", () => {
     render(railAt("home"));
     const rail = screen.getByRole("navigation", { name: "Workspace" });
     expect([...rail.querySelectorAll("a, button")].map((item) => item.getAttribute("aria-label") ?? item.textContent)).toEqual([
+      "Back",
+      "Forward",
       "Ember home",
       "Home",
       "DMs",
       "Activity",
+      "Saved",
       "Search",
       "Workspace",
       "Appearance: System",
@@ -38,12 +42,30 @@ describe("Rail", () => {
     expect(within(rail).getByRole("link", { name: "Your profile" })).toHaveAttribute("href", "/users/me/profile");
   });
 
+  it("puts Back and Forward at its top for a pointer, leaving them out for fingers, which have their own way back", () => {
+    render(railAt("room"));
+    const arrows = screen.getByRole("button", { name: "Back" }).parentElement!;
+    expect(arrows).toContainElement(screen.getByRole("button", { name: "Forward" }));
+    expect(arrows).toHaveClass("touch:hidden");
+    expect(screen.getByRole("navigation", { name: "Workspace" }).firstElementChild).toBe(arrows);
+  });
+
   it("links your avatar to your profile, titled with your name", async () => {
     render(railAt("home"));
     const profile = screen.getByRole("link", { name: "Your profile" });
     expect(profile).toHaveAttribute("title", "Ada Lovelace");
     await userEvent.click(profile);
     expect(location.pathname).toBe("/users/me/profile");
+  });
+
+  it("lays a crescent on your avatar while Do not disturb hushes your push notifications, saying so in the title", () => {
+    const { rerender } = render(railAt("home", activityOff, ada, () => {}, null, "2026-11-14T09:00:00.000Z"));
+    const profile = screen.getByRole("link", { name: "Your profile" });
+    expect(profile).toHaveAttribute("title", "Ada Lovelace — push notifications hushed");
+    expect(profile.querySelector("svg.iconoir-half-moon")).toBeInTheDocument();
+    rerender(railAt("home"));
+    expect(profile).toHaveAttribute("title", "Ada Lovelace");
+    expect(profile.querySelector("svg.iconoir-half-moon")).not.toBeInTheDocument();
   });
 
   it("names the settings link Admin for administrators, and Workspace for everyone else", () => {
@@ -68,6 +90,21 @@ describe("Rail", () => {
     rerender(railAt("home", activityOff, grace));
     expect(admin).not.toHaveAccessibleDescription();
     expect(admin.lastElementChild).toHaveTextContent("Admin");
+  });
+
+  it("marks Admin with a dot while reports are open too, saying how many", () => {
+    const grace = { ...ada, administrator: true };
+    const rail = (openReports: number, newRelease: string | null = null) => (
+      <Rail me={grace} workspaceName="Analytical Engines" current="home" activity={activityOff} dndUntil={null} saved={savedClosed} newRelease={newRelease} openReports={openReports} onNewDirect={() => {}} />
+    );
+    const { rerender } = render(rail(1));
+    const admin = screen.getByRole("link", { name: "Admin" });
+    expect(admin).toHaveAccessibleDescription("1 open report");
+    expect(admin.lastElementChild).toHaveClass("absolute", "rounded-full", "bg-foreground");
+    rerender(rail(3, "0.2"));
+    expect(admin).toHaveAccessibleDescription("Ember 0.2 is available. 3 open reports");
+    rerender(rail(0));
+    expect(admin).not.toHaveAccessibleDescription();
   });
 
   it("titles the logo with the workspace's name", () => {
@@ -109,10 +146,13 @@ describe("Rail", () => {
       [...rail.querySelectorAll("a, button")].map((item) => [item.getAttribute("aria-label") ?? item.textContent, item.querySelector("svg")?.classList[0]]),
     );
     expect(icons).toEqual({
+      Back: "iconoir-arrow-left",
+      Forward: "iconoir-arrow-right",
       "Ember home": undefined,
       Home: "iconoir-home",
       DMs: "iconoir-multi-bubble",
       Activity: "iconoir-bell",
+      Saved: "iconoir-bookmark",
       Search: "iconoir-search",
       Workspace: "iconoir-box",
       "Appearance: System": "iconoir-computer",
@@ -191,6 +231,35 @@ describe("Activity filter", () => {
   });
 });
 
+describe("Saved control", () => {
+  it("toggles Saved and shows it pressed while the pane is open", async () => {
+    const onToggle = vi.fn();
+    const { rerender } = render(railAt("home", activityOff, ada, () => {}, null, null, { on: false, count: 0, onToggle }));
+    const saved = screen.getByRole("button", { name: "Saved" });
+    expect(saved).toHaveAttribute("title", "Show saved messages");
+    expect(saved).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(saved);
+    expect(onToggle).toHaveBeenCalledOnce();
+
+    rerender(railAt("home", activityOff, ada, () => {}, null, null, { on: true, count: 1, onToggle }));
+    expect(saved).toHaveAttribute("aria-pressed", "true");
+    expect(saved).toHaveClass("aria-pressed:bg-hover", "aria-pressed:text-foreground");
+  });
+
+  it("counts saved messages in a pill at its corner, hidden at none", () => {
+    const { rerender } = render(railAt("room", activityOff, ada, () => {}, null, null, { on: false, count: 2, onToggle: () => {} }));
+    const saved = screen.getByRole("button", { name: "Saved" });
+    expect(saved).toHaveAccessibleDescription("2 saved");
+    const pill = within(saved).getByText("2");
+    expect(pill).toHaveAttribute("aria-hidden", "true");
+    expect(pill).toHaveClass("absolute", "h-[17px]", "min-w-[17px]", "border-2", "border-surface", "bg-foreground", "text-[10px]", "text-background");
+
+    rerender(railAt("room", activityOff, ada, () => {}, null, null, { on: false, count: 0, onToggle: () => {} }));
+    expect(saved).not.toHaveAttribute("aria-description");
+    expect(saved).toHaveTextContent(/^Saved$/);
+  });
+});
+
 describe("Initials avatars", () => {
   it("shows your avatar as your profile picture", () => {
     render(railAt("home"));
@@ -201,7 +270,7 @@ describe("Initials avatars", () => {
 
 describe("Workspace logo", () => {
   it("shows Ember's flame, or the workspace's logo, filling a 56px square with rounded corners", () => {
-    const account = { name: "Analytical Engines", tagline: "", hideTranslationButtons: true, customStyles: "", restrictRoomCreation: false, logo: null, customDomain: null, joinLink: true, openSignUp: false, memberfulJoin: false, memberfulSignIn: false, emailDomainSignUp: false, emailDomains: [], navigationIcons: {}, huddles: false };
+    const account = { name: "Analytical Engines", tagline: "", hideTranslationButtons: true, customStyles: "", restrictRoomCreation: false, logo: null, customDomain: null, joinLink: true, openSignUp: false, memberfulJoin: false, memberfulSignIn: false, ssoJoin: false, ssoSignIn: false, emailDomainSignUp: false, emailDomains: [], navigationIcons: {}, huddles: false, huddleCameras: true, huddleScreens: true };
     const { rerender } = render(<AccountContext value={account}>{railAt("home")}</AccountContext>);
     const brand = screen.getByRole("link", { name: "Ember home" });
     expect(brand.querySelector("img")).toHaveAttribute("src", "/ember-icon.png");
@@ -231,10 +300,14 @@ describe("Navigation icons", () => {
       openSignUp: false,
       memberfulJoin: false,
       memberfulSignIn: false,
+      ssoJoin: false,
+      ssoSignIn: false,
       emailDomainSignUp: false,
       emailDomains: [],
       navigationIcons: { home: "coffee", search: "iconoir:solid:heart" },
       huddles: false,
+      huddleCameras: true,
+      huddleScreens: true,
     };
     render(<AccountContext value={account}>{railAt("home", activityOff, { ...ada, administrator: true })}</AccountContext>);
     const icon = (name: string) => screen.getByRole(name === "Activity" ? "button" : "link", { name }).querySelector("[data-icon], svg");

@@ -37,6 +37,23 @@ describe("Community settings page", () => {
     expect(current()).toHaveClass("aria-[current=page]:bg-hover", "aria-[current=page]:font-semibold");
   });
 
+  it("counts administrators' open reports on Membership, which holds their list, as screen readers hear too", () => {
+    const { rerender } = render(<SettingsNavigation section="community-settings" administrator openReports={2} />);
+    const membership = screen.getByRole("link", { name: "Membership" });
+    expect(membership).toHaveAccessibleDescription("2 open reports");
+    expect(membership.lastElementChild).toHaveTextContent("2");
+    expect(membership.lastElementChild).toHaveAttribute("aria-hidden", "true");
+    rerender(<SettingsNavigation section="community-settings" administrator openReports={1} />);
+    expect(membership).toHaveAccessibleDescription("1 open report");
+    for (const link of links().filter((link) => link !== membership)) expect(link).not.toHaveAccessibleDescription();
+
+    rerender(<SettingsNavigation section="community-settings" administrator openReports={0} />);
+    expect(membership).not.toHaveAccessibleDescription();
+    expect(membership).toHaveTextContent(/^Membership$/);
+    rerender(<SettingsNavigation section="community-settings" administrator={false} openReports={2} />);
+    expect(screen.getByRole("link", { name: "Membership" })).toHaveTextContent(/^Membership$/);
+  });
+
   it("follows a link to another section in place, the page staying as it is", async () => {
     render(<SettingsNavigation section="community-settings" administrator={false} />);
     history.replaceState(null, "", "/account/edit");
@@ -110,9 +127,24 @@ describe("Chat bots page", () => {
     const { rerender } = render(<SettingsNavigation section="chat-bots" administrator />);
     expect(screen.getByRole("link", { name: "Chat bots" })).toHaveAttribute("href", "/account/bots");
     expect(current()).toHaveTextContent("Chat bots");
-    expect(links().map((link) => link.textContent)).toEqual(["General", "Rooms and permissions", "Membership", "Domain settings", "Chat bots", "AI assistant", "Huddles", "Custom styles"]);
+    expect(links().map((link) => link.textContent)).toEqual(["General", "Rooms and permissions", "Membership", "Profile fields", "User groups", "Domain settings", "Chat bots", "AI assistant", "Huddles", "Custom styles"]);
     rerender(<SettingsNavigation section="community-settings" administrator={false} />);
     expect(screen.queryByRole("link", { name: "Chat bots" })).not.toBeInTheDocument();
+  });
+});
+
+describe("User groups", () => {
+  it("links administrators to User groups, after Membership, under the community, and members not at all", () => {
+    const { rerender } = render(<SettingsNavigation section="user-groups-settings" administrator />);
+    const groups = screen.getByRole("link", { name: "User groups" });
+    expect(groups).toHaveAttribute("href", "/account/edit#user-groups-settings");
+    expect(groups.querySelector("svg")).toHaveClass("iconoir-community");
+    expect(groups.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    expect(links()[4]).toBe(groups);
+    expect(current()).toBe(groups);
+    expect(workspaceSectionOf("#user-groups-settings")).toBe("user-groups-settings");
+    rerender(<SettingsNavigation section="community-settings" administrator={false} />);
+    expect(screen.queryByRole("link", { name: "User groups" })).not.toBeInTheDocument();
   });
 });
 
@@ -156,12 +188,12 @@ describe("Custom CSS", () => {
 });
 
 describe("Custom domain", () => {
-  it("links administrators to Domain settings, after Membership, and members not at all", () => {
+  it("links administrators to Domain settings, after Profile fields and User groups, and members not at all", () => {
     const { rerender } = render(<SettingsNavigation section="domain-settings" administrator />);
     const domain = screen.getByRole("link", { name: "Domain settings" });
     expect(domain).toHaveAttribute("href", "/account/edit#domain-settings");
     expect(domain.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
-    expect(links()[3]).toBe(domain);
+    expect(links()[5]).toBe(domain);
     expect(current()).toBe(domain);
     rerender(<SettingsNavigation section="community-settings" administrator={false} />);
     expect(screen.queryByRole("link", { name: "Domain settings" })).not.toBeInTheDocument();

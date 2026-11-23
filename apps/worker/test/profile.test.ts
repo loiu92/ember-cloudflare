@@ -3,11 +3,17 @@ import {
   CURRENT_PASSWORD_NEEDED,
   CURRENT_PASSWORD_WRONG,
   MAX_BIO_LENGTH,
+  MAX_MOOD_EMOJI_LENGTH,
+  MAX_MOOD_TEXT_LENGTH,
+  MAX_USERNAME_LENGTH,
   PASSWORD_TOO_SHORT,
   SIGN_IN_LIMITED,
+  USERNAME_REFUSED,
+  USERNAME_TAKEN,
   type Directory,
   type DirectoryUser,
   type NewWorkspace,
+  type PersonMood,
   type Profile,
   type ProfileAnswer,
   type UserId,
@@ -124,9 +130,9 @@ describe("Edit your profile", () => {
     const response = await api("/api/users/me/profile", { headers: as(administrator) });
     expect(response.status).toBe(200);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
-    const profile = { name: "Ada Lovelace", emailAddress: "ada@example.com", bio: null, ...(await initialsOf(administrator)), password: true, membershipNeeded: false, memberful: null, assistant: null, apps: [], outsideAi: null };
+    const profile = { name: "Ada Lovelace", username: null, emailAddress: "ada@example.com", bio: null, mood: null, ...(await initialsOf(administrator)), password: true, membershipNeeded: false, memberful: null, sso: null, assistant: null, fields: [], apps: [], outsideAi: null, dndUntil: null };
     expect(await response.json()).toEqual({ profile, transferId: expect.any(String) } satisfies ProfileAnswer);
-    expect(await profileOf(grace)).toEqual({ name: "Grace Hopper", emailAddress: null, bio: "Rear admiral", ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, assistant: null, apps: [], outsideAi: null } satisfies Profile);
+    expect(await profileOf(grace)).toEqual({ name: "Grace Hopper", username: null, emailAddress: null, bio: "Rear admiral", mood: null, ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, sso: null, assistant: null, fields: [], apps: [], outsideAi: null, dndUntil: null } satisfies Profile);
   });
 
   it("saves your name, email address and bio, answering your profile as it is then", async () => {
@@ -136,7 +142,7 @@ describe("Edit your profile", () => {
 
     const response = await save(grace, changed);
     expect(response.status).toBe(200);
-    const profile: Profile = { ...changed, ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, assistant: null, apps: [], outsideAi: null };
+    const profile: Profile = { ...changed, username: null, mood: null, ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, sso: null, assistant: null, fields: [], apps: [], outsideAi: null, dndUntil: null };
     expect(await response.json()).toEqual({ profile, transferId: expect.any(String) } satisfies ProfileAnswer);
     expect(await profileOf(grace)).toEqual(profile);
     expect(await (await me(grace)).json()).toEqual({ user: { id: grace.user.id, name: "Grace Brewster Hopper", administrator: false } });
@@ -151,14 +157,14 @@ describe("Edit your profile", () => {
     for (const body of [{}, { name: "Grace Hopper" }, { bio: "Rear admiral", password: "" }]) {
       const response = await save(grace, body);
       expect(response.status, JSON.stringify(body)).toBe(200);
-      expect(await response.json()).toEqual({ profile: { name: "Grace Hopper", emailAddress: null, bio: "Rear admiral", ...initials, password: false, membershipNeeded: true, memberful: null, assistant: null, apps: [], outsideAi: null }, transferId: expect.any(String) });
+      expect(await response.json()).toEqual({ profile: { name: "Grace Hopper", username: null, emailAddress: null, bio: "Rear admiral", mood: null, ...initials, password: false, membershipNeeded: true, memberful: null, sso: null, assistant: null, fields: [], apps: [], outsideAi: null, dndUntil: null }, transferId: expect.any(String) });
       expect((await stored(grace.user.id)).updated_at).toBe(LONG_AGO);
     }
 
     const answer = await (await save(grace, { bio: "Admiral" })).json();
     expect((await stored(grace.user.id)).updated_at > LONG_AGO).toBe(true);
     // The avatar's address changes with it, as it's versioned by when they last changed.
-    expect(answer).toEqual({ profile: { name: "Grace Hopper", emailAddress: null, bio: "Admiral", ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, assistant: null, apps: [], outsideAi: null }, transferId: expect.any(String) });
+    expect(answer).toEqual({ profile: { name: "Grace Hopper", username: null, emailAddress: null, bio: "Admiral", mood: null, ...(await initialsOf(grace)), password: false, membershipNeeded: true, memberful: null, sso: null, assistant: null, fields: [], apps: [], outsideAi: null, dndUntil: null }, transferId: expect.any(String) });
     expect((await initialsOf(grace)).avatarUrl).not.toBe(initials.avatarUrl);
   });
 
@@ -433,5 +439,150 @@ describe("Edit your profile", () => {
     }
     expect((await api(`/api/users/${grace.user.id}/profile`, { headers: as(grace) })).status).toBe(404);
     expect((await stored(grace.user.id)).name).toBe("Grace Hopper");
+  });
+});
+
+/** A mood to wear: an emoji, a few words beside it, and when it comes off by itself. */
+const mood: PersonMood = { emoji: "😌", text: "Pairing on the compiler", clearAt: "2027-01-01T09:00:00.000Z" };
+
+/** Whose mood `directory` lists for `userId`, or null while they wear none. */
+const moodOf = async (viewer: Session, userId: UserId): Promise<PersonMood | null> => (await listed(viewer, userId)).mood ?? null;
+
+describe("Your mood", () => {
+  it("wears an emoji and a few words beside your name, which your profile answers and everyone else is told", async () => {
+    const administrator = await setUp();
+    const grace = await signIn("Grace Hopper");
+    const socket = await openWorkspaceSocket(administrator);
+
+    const response = await save(grace, { mood });
+    expect(response.status).toBe(200);
+    expect((await response.json() as ProfileAnswer).profile.mood).toEqual(mood);
+    // Another person sees it in the directory and on the page it names.
+    expect(await moodOf(administrator, grace.user.id)).toEqual(mood);
+    const page = (await (await api(`/api/users/${grace.user.id}`, { headers: as(administrator) })).json()) as { person: DirectoryUser };
+    expect(page.person.mood).toEqual(mood);
+    expect(await socket.next()).toEqual({ type: "user.updated", user: await listed(administrator, grace.user.id) });
+  });
+
+  it("takes the mood off with null, and keeps it while a save says nothing of it", async () => {
+    const administrator = await setUp();
+    const grace = await signIn("Grace Hopper");
+    const socket = await openWorkspaceSocket(administrator);
+    await save(grace, { mood });
+    await socket.next();
+
+    expect((await (await save(grace, { mood: null })).json() as ProfileAnswer).profile.mood).toBeNull();
+    expect(await moodOf(administrator, grace.user.id)).toBeNull();
+    expect(await socket.next()).toEqual({ type: "user.updated", user: await listed(administrator, grace.user.id) });
+
+    await save(grace, { mood });
+    await socket.next();
+    // A save that leaves the mood out wears the one they have.
+    expect((await (await save(grace, { bio: "Rear admiral" })).json() as ProfileAnswer).profile.mood).toEqual(mood);
+    expect(await socket.next()).toMatchObject({ type: "user.updated", user: { bio: "Rear admiral", mood } });
+  });
+
+  it("keeps a mood whose clear time has passed, which pages leave out", async () => {
+    const grace = await signIn("Grace Hopper");
+    const expired = { ...mood, clearAt: LONG_AGO };
+    expect((await save(grace, { mood: expired })).status).toBe(200);
+    expect(await profileOf(grace)).toMatchObject({ mood: expired });
+    expect(await moodOf(grace, grace.user.id)).toEqual(expired);
+  });
+
+  it("saves a clear time as the instant its text names, however padded or strangely it was written", async () => {
+    const grace = await signIn("Grace Hopper");
+    const padded = { ...mood, clearAt: `2027-01-01 09:00:00 UTC${" ".repeat(900_000)}` };
+    expect((await save(grace, { mood: padded })).status).toBe(200);
+    expect(await profileOf(grace)).toMatchObject({ mood });
+    expect(await moodOf(grace, grace.user.id)).toEqual(mood);
+  });
+
+  it.each([
+    ["a mood without an emoji", { ...mood, emoji: "" }, "Emoji is required"],
+    ["an emoji longer than the form takes", { ...mood, emoji: "x".repeat(MAX_MOOD_EMOJI_LENGTH + 1) }, `Emoji must be at most ${MAX_MOOD_EMOJI_LENGTH} characters`],
+    ["a mood without words", { ...mood, text: "" }, "A few words are required"],
+    ["words longer than the form takes", { ...mood, text: "x".repeat(MAX_MOOD_TEXT_LENGTH + 1) }, `Words must be at most ${MAX_MOOD_TEXT_LENGTH} characters`],
+    ["a clear time that isn't a time", { ...mood, clearAt: "soon" }, "Clear time isn't a time"],
+    ["a clear time that isn't text or null", { ...mood, clearAt: 1 }, "Clear time must be a time or null"],
+    ["a mood that isn't an object", "😌", "Expected a JSON object"],
+  ])("refuses %s, saving nothing", async (_, change, error) => {
+    const grace = await signIn("Grace Hopper");
+    const before = await stored(grace.user.id);
+    const response = await save(grace, { mood: change });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error });
+    expect(await stored(grace.user.id)).toEqual(before);
+});
+
+});
+
+describe("Usernames", () => {
+  /** Makes an agent called `name`, as making one leaves it once Ember AI is turned off. */
+  async function agentCalled(name: string, createdBy: UserId): Promise<void> {
+    await workspaceSql("INSERT INTO users (id, name, role, status, created_at, updated_at) VALUES ('0agent', ?, 2, 1, ?2, ?2)", name, LONG_AGO);
+    await workspaceSql(
+      `INSERT INTO agents (user_id, description, instructions, model, model_name, format, thinking, answer_length, every_open_room, created_by, updated_by, created_at, updated_at)
+        VALUES ('0agent', 'Sums up threads', 'Sum up.', 'anthropic/claude-haiku-5.5', 'Claude Haiku 5.5', 'messages', 'off', 'short', 1, ?1, ?1, ?2, ?2)`,
+      createdBy,
+      LONG_AGO,
+    );
+  }
+
+  it("saves yours as Ember keeps one, in lowercase without spaces or an @, which the directory lists and everyone's workspace sockets hear of", async () => {
+    const administrator = await setUp();
+    const grace = await signIn("Grace Hopper");
+    const workspace = await openWorkspaceSocket(administrator);
+
+    const response = await save(grace, { username: " @Amazing.Grace " });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(((await response.json()) as ProfileAnswer).profile.username).toBe("amazing.grace");
+    expect(await profileOf(grace)).toMatchObject({ name: "Grace Hopper", username: "amazing.grace" });
+    const listing = await listed(administrator, grace.user.id);
+    expect(listing).toMatchObject({ name: "Grace Hopper", username: "amazing.grace" });
+    expect(await workspace.next()).toEqual({ type: "user.updated", user: listing });
+  });
+
+  it("leaves it out of the directory for someone without one, and takes yours away when it's blank", async () => {
+    const administrator = await setUp();
+    expect(await profileOf(administrator)).toMatchObject({ username: null });
+    expect(await listed(administrator, administrator.user.id)).not.toHaveProperty("username");
+    expect((await save(administrator, { username: "ada" })).status).toBe(200);
+
+    const response = await save(administrator, { username: " " });
+    expect(((await response.json()) as ProfileAnswer).profile.username).toBeNull();
+    expect(await listed(administrator, administrator.user.id)).not.toHaveProperty("username");
+    expect(await workspaceSql("SELECT username FROM users WHERE id = ?", administrator.user.id)).toEqual([{ username: null }]);
+  });
+
+  it.each([
+    ["that starts with a period", ".grace"],
+    ["with a letter a username can't have", "grâce"],
+    ["longer than a username can be", "g".repeat(MAX_USERNAME_LENGTH + 1)],
+  ])("refuses one %s, saving nothing", async (_, username) => {
+    const grace = await signIn("Grace Hopper");
+    const response = await save(grace, { name: "Amazing Grace", username });
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: USERNAME_REFUSED });
+    expect((await stored(grace.user.id)).name).toBe("Grace Hopper");
+  });
+
+  it("refuses one someone else has, in any capitals, even once they've been removed, and @ember's or an agent's name, saving nothing", async () => {
+    const administrator = await setUp();
+    const [grace, alan] = [await signIn("Grace Hopper"), await signIn("Alan Turing")];
+    await agentCalled("Scout", administrator.user.id);
+    expect((await save(administrator, { username: "ada" })).status).toBe(200);
+    expect((await save(alan, { username: "alan" })).status).toBe(200);
+    await workspaceSql("UPDATE users SET status = 1 WHERE id = ?", alan.user.id);
+
+    for (const username of ["ada", "ADA", "alan", "ember", "Scout"]) {
+      const response = await save(grace, { bio: "Rear admiral", username });
+      expect(response.status, username).toBe(422);
+      expect(await response.json()).toEqual({ error: USERNAME_TAKEN });
+    }
+    expect(await stored(grace.user.id)).toMatchObject({ bio: null });
+    // Your own is yours to keep as you change the rest.
+    expect((await save(administrator, { username: "ada", bio: "Countess" })).status).toBe(200);
+    expect(await stored(administrator.user.id)).toMatchObject({ bio: "Countess" });
   });
 });

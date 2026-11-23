@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { dataOf } from "./jsonc.ts";
+import { MIGRATION_RENAMES as DEPLOY_RENAMES } from "./deploy.ts";
+import { MIGRATION_RENAMES as STORE_RENAMES } from "../src/migration-renames.ts";
 
 const SCRIPT = fileURLToPath(new URL("./deploy.ts", import.meta.url));
 const SECRET = /^[0-9a-f]{64}$/;
@@ -94,14 +96,18 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const output = (name: string) => (existsSync(path.join(dir, name)) ? readFileSync(path.join(dir, name), "utf8").trim() : null);
 
+/** Has the script take its output for a terminal's, which the suite reads through a pipe. */
+const AT_TERMINAL = ["--import", "data:text/javascript,process.stdout.isTTY=true"];
+
 /**
  * Runs the script, or `script`, with `args` for a Worker whose secrets are `listing`, in a shell like a
- * terminal's unless `env` says it's CI's, Workers Builds' or GitHub Actions', or brings a setup token.
+ * terminal's unless `env` says it's CI's, Workers Builds' or GitHub Actions', or brings a setup token. Its
+ * output is a terminal's there, and a log's in CI, unless `terminal` says otherwise.
  */
 function deploy(
   listing: Listing,
   args: string[] = [],
-  { deployStatus = 0, env = {}, script = SCRIPT }: { deployStatus?: number; env?: Record<string, string>; script?: string } = {},
+  { deployStatus = 0, env = {}, script = SCRIPT, terminal = !env.CI }: { deployStatus?: number; env?: Record<string, string>; script?: string; terminal?: boolean } = {},
 ) {
   const LISTING = Array.isArray(listing) ? JSON.stringify(listing.map((name) => ({ name, type: "secret_text" }))) : listing;
   // The suite itself runs under CI, which the script must hear only from the test.
@@ -118,6 +124,9 @@ function deploy(
     MEMBERFUL_CLIENT_SECRET: _secret,
     MEMBERFUL_API_KEY: _apiKey,
     MEMBERFUL_WEBHOOK_SECRET: _webhookSecret,
+    SSO_ISSUER: _issuer,
+    SSO_CLIENT_ID: _ssoClient,
+    SSO_CLIENT_SECRET: _ssoSecret,
     TURNSTILE_SITE_KEY: _siteKey,
     TURNSTILE_SECRET_KEY: _turnstileSecret,
     RESEND_API_KEY: _resendKey,
@@ -128,7 +137,7 @@ function deploy(
   } = process.env;
   // The script reads git's origin, which for this repository's own script would be the origin of whichever clone runs the suite, so git there finds no repository.
   const git = script === SCRIPT ? { GIT_DIR: path.join(dir, "no-repository") } : {};
-  const run = spawnSync(process.execPath, [script, ...args], {
+  const run = spawnSync(process.execPath, [...(terminal ? AT_TERMINAL : []), script, ...args], {
     env: { ...shell, ...git, PATH: `${dir}:${process.env.PATH}`, LISTING, OUT: dir, DEPLOY_STATUS: String(deployStatus), TARGETS: JSON.stringify([WORKER_URL]), ...env },
     encoding: "utf8",
   });
@@ -307,6 +316,21 @@ describe("Installer-protected setup link", () => {
     expect(logs).not.toContain("::notice::");
   });
 
+  it("makes none where its output isn't a terminal's, as the log of a CI that doesn't say it's one isn't", () => {
+    const { status, secrets, logs } = deploy("no worker", [], { terminal: false });
+    expect(status).toBe(0);
+    expect(secrets).not.toHaveProperty("EMBER_SETUP_TOKEN");
+    expect(logs).not.toContain("Set up Ember at");
+    expect(logs).toContain("this log may be public, so this deploy made no token");
+  });
+
+  it("makes none in a CI that gives it a terminal, either", () => {
+    const { secrets, logs } = deploy("no worker", [], { env: { CI: "true" }, terminal: true });
+    expect(secrets).not.toHaveProperty("EMBER_SETUP_TOKEN");
+    expect(logs).not.toContain("Set up Ember at");
+    expect(logs).toContain("this log may be public, so this deploy made no token");
+  });
+
   it("says so as a notice under GitHub Actions, where it shows on the run", () => {
     const { logs } = deploy("no worker", [], { env: { CI: "true", GITHUB_ACTIONS: "true" } });
     expect(logs).toMatch(/^::notice::Nobody can set Ember up until the Worker has a setup password or an EMBER_SETUP_TOKEN secret/m);
@@ -464,11 +488,27 @@ describe("Where messages live", () => {
     expect(logs).toContain(`STORAGE_BACKEND must be "do-sqlite" or "d1", not ${JSON.stringify(backend)}`);
   });
 
-  it("applies Ember's migrations to a copy's D1 database before deploying the Worker that reads it, from the config as it is", () => {
-    const options = copysConfig("d1");
+  it("renames a copy's D1 records by the same list the objects rename theirs by", () => {
+    expect(DEPLOY_RENAMES).toEqual(STORE_RENAMES);
+  });
+
+  it("applies Ember's migrations to a copy's D1 database before deploying the Worker that reads it, from the config as it is", () => {    const options = copysConfig("d1");
     const { status } = deploy("no worker", options);
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "d1 execute", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
+    // The records of migrations a copy ran under the numbers it numbered them by move to the files of
+    // today first, since wrangler applies by name and would make what the tables already are twice:
+    // one ask carries the table and every rename, the shortcuts' slot among them, and the reminders'
+    // two eras each.
+    const asked = output("d1-calls") ?? "";
+    expect(asked).toContain("UPDATE d1_migrations SET name = '0091_shortcuts.sql' WHERE name = '0075_shortcuts.sql'");
+    expect(asked).toContain("UPDATE d1_migrations SET name = '0084_reminders.sql' WHERE name = '0067_reminders.sql'");
+    expect(asked).toContain("UPDATE d1_migrations SET name = '0084_reminders.sql' WHERE name = '0061_reminders.sql'");
+    // A database that ran the reminders migration while it kept no reminder's thread has the column
+    // added, once its tables are named as they are today.
+    expect(asked).toContain(
+      "d1 execute DB --remote --json --yes --command SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reminders') AS kept, (SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'parent_id') AS thread",
+    );
     // In CI, which answers wrangler's question before it applies them.
     expect(output("d1-calls")).toContain(`d1 migrations apply DB --remote --config ${options[1]}\nCI=true`);
     expect(output("deploy-args")).toBe(options.join(" "));
@@ -478,7 +518,7 @@ describe("Where messages live", () => {
     const options = copysConfig("d1", [DATABASE]);
     const { status, logs } = deploy("no worker", options);
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "d1 list", "d1 create", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "d1 list", "d1 create", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
     expect(output("d1-calls")).toContain(`d1 create ember --no-update-config --config ${options[1]}`);
     expect(logs).toContain("Making the D1 database ember, which keeps this Ember's messages");
   });
@@ -490,7 +530,7 @@ describe("Where messages live", () => {
     ]);
     const { status } = deploy("no worker", copysConfig("d1", [DATABASE]), { env: { D1_DATABASES } });
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "d1 list", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "d1 list", "d1 execute", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
   });
 
   it("refuses a D1 database another Ember is set up in for a new Worker, before migrating it or deploying", () => {
@@ -522,13 +562,13 @@ describe("Where messages live", () => {
   it("takes a D1 database that's migrated but not set up, as a first deploy that failed after migrating leaves it", () => {
     const { status } = deploy("no worker", copysConfig("d1"), { env: { D1_STATE: "migrated" } });
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "d1 execute", "d1 execute", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
   });
 
   it("migrates the database a Worker deployed before is bound to without asking whether an Ember is set up in it, as its own is", () => {
     const { status } = deploy(EVERY_SECRET, copysConfig("d1"), { env: { D1_STATE: "set up", BOUND_D1: MADE.database_id } });
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "deployments status", "versions view", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "deployments status", "versions view", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
   });
 
   it("stops where it can't tell which D1 database a Worker deployed before is bound to", () => {
@@ -549,7 +589,7 @@ describe("Where messages live", () => {
   it.each([[["--dry-run=false"]], [["--dry-run", "false"]]])("readies the D1 database where the options turn the dry run off (%j)", (dryRun) => {
     const { status } = deploy("no worker", [...copysConfig("d1"), ...dryRun]);
     expect(status).toBe(0);
-    expect(commands()).toEqual(["secret list", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
+    expect(commands()).toEqual(["secret list", "d1 execute", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]);
   });
 
   it.each([[[]], [["--var", "STORAGE_BACKEND:d1"]]])(
@@ -581,7 +621,7 @@ describe("Where messages live", () => {
   });
 
   it.each([
-    ["do-sqlite", "d1", ["secret list", "deployments status", "versions view", "d1 execute", "d1 migrations", "deploy --secrets-file"]],
+    ["do-sqlite", "d1", ["secret list", "deployments status", "versions view", "d1 execute", "d1 execute", "d1 execute", "d1 migrations", "deploy --secrets-file"]],
     ["d1", "do-sqlite", ["secret list", "deploy --secrets-file"]],
   ])("keeps messages where a --var says, over a config's %s (%s)", (configured, given, expected) => {
     const { status } = deploy(EVERY_SECRET, [...copysConfig(configured), "--var", `STORAGE_BACKEND:${given}`]);
@@ -703,6 +743,17 @@ describe("Sign in with Memberful", () => {
     const { secrets, logs } = deploy(EVERY_SECRET, [], { env: { MEMBERFUL_URL: "", MEMBERFUL_CLIENT_ID: "", MEMBERFUL_CLIENT_SECRET: "" } });
     expect(secrets).toEqual({});
     expect(logs).toContain("Deploying with the Worker's secrets as they are");
+  });
+});
+
+describe("Single sign-on", () => {
+  it("uploads the provider's issuer and the app's keys the environment gives with every deploy, and never prints the secret", () => {
+    const keys = { SSO_ISSUER: "https://example.zitadel.cloud", SSO_CLIENT_ID: "client-id", SSO_CLIENT_SECRET: "sso-client-secret" };
+    const { status, secrets, logs } = deploy(EVERY_SECRET, [], { env: { ...keys, CI: "true", GITHUB_ACTIONS: "true" } });
+    expect(status).toBe(0);
+    expect(secrets).toEqual(keys);
+    expect(logs).toContain("Deploying with SSO_ISSUER, SSO_CLIENT_ID, SSO_CLIENT_SECRET from the environment");
+    expect(logs).not.toContain("sso-client-secret");
   });
 });
 

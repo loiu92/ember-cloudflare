@@ -13,9 +13,10 @@
 // meant to be read: the deploy prints the setup link that carries it, which is spent once Ember is set
 // up. The secrets go up with the code in one `wrangler deploy --secrets-file`, from a file only this
 // deploy can read, and nothing else here prints them: Cloudflare's build logs mask nothing, as GitHub's
-// would. A CI log can be public, as a public repository's Actions logs are, so there the deploy makes no
-// setup token, and says so, unless EMBER_SETUP_TOKEN in its environment brings one the deployer keeps as
-// a secret of their own. Workers Builds' log is the account's own, so it can carry the link. The keys of
+// would. A CI log can be public, as a public repository's Actions logs are, and not every CI says it's
+// one, so there, and wherever its output isn't a terminal's, the deploy makes no setup token, and says
+// so, unless EMBER_SETUP_TOKEN in its environment brings one the deployer keeps as a secret of their
+// own. Workers Builds' log is the account's own, so it can carry the link. The keys of
 // a Memberful custom app, for its members to sign in, in place of any given in Set up Memberful
 // (apps/worker/src/memberful.ts), and of a Turnstile widget, for open sign-up's check, in place of any
 // given in Set up Turnstile (apps/worker/src/turnstile.ts), go up with every deploy whose environment
@@ -38,6 +39,44 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { dataOf } from "./jsonc.ts";
 import { vapidKeys } from "./vapid-keys.ts";
+
+/**
+ * What this fork's deploys numbered the workspace's and rooms' own migrations by before it numbered
+ * them as it does now, each with the file that holds what it made today, which a copy's database that
+ * ran one under an old name has its record renamed to before wrangler applies them. The same list, of
+ * the same mind, names the objects' own (src/migration-renames.ts), which a test holds the two to.
+ */
+export const MIGRATION_RENAMES: readonly (readonly [was: string, now: string])[] = [
+  ["0057_pins.sql", "0080_pins.sql"],
+  ["0063_pins.sql", "0080_pins.sql"],
+  ["0058_user_groups.sql", "0081_user_groups.sql"],
+  ["0064_user_groups.sql", "0081_user_groups.sql"],
+  ["0059_dnd.sql", "0082_dnd.sql"],
+  ["0065_dnd.sql", "0082_dnd.sql"],
+  ["0060_profile_fields.sql", "0083_profile_fields.sql"],
+  ["0066_profile_fields.sql", "0083_profile_fields.sql"],
+  ["0061_reminders.sql", "0084_reminders.sql"],
+  ["0067_reminders.sql", "0084_reminders.sql"],
+  ["0073_reminder_push_retries.sql", "0085_reminder_push_retries.sql"],
+  ["0068_reminder_push_retries.sql", "0085_reminder_push_retries.sql"],
+  ["0062_statuses.sql", "0086_statuses.sql"],
+  ["0069_statuses.sql", "0086_statuses.sql"],
+  ["0063_saves.sql", "0087_saves.sql"],
+  ["0070_saves.sql", "0087_saves.sql"],
+  ["0064_guests.sql", "0088_guests.sql"],
+  ["0071_guests.sql", "0088_guests.sql"],
+  ["0065_commands.sql", "0089_commands.sql"],
+  ["0072_commands.sql", "0089_commands.sql"],
+  ["0062_reminder_pushes.sql", "0090_reminder_pushes.sql"],
+  ["0072_reminder_pushes.sql", "0090_reminder_pushes.sql"],
+  ["0074_reminder_pushes.sql", "0090_reminder_pushes.sql"],
+  ["0075_shortcuts.sql", "0091_shortcuts.sql"],
+  ["0063_usernames.sql", "0072_usernames.sql"],
+  ["0071_reports.sql", "0073_reports.sql"],
+  ["0073_bot_rooms.sql", "0077_bot_rooms.sql"],
+  ["0077_cleared_reports.sql", "0078_cleared_reports.sql"],
+  ["0066_tokens.sql", "0073_tokens.sql"],
+];
 
 /** The repository's root, where wrangler.jsonc is. */
 const ROOT = fileURLToPath(new URL("../../..", import.meta.url));
@@ -90,12 +129,16 @@ function secretNames(target: string[]): string[] {
 /** The shape of EMBER_SETUP_TOKEN, as the Worker checks it (apps/worker/src/secrets.ts): `openssl rand -hex 32`. */
 const SETUP_TOKEN = /^[0-9a-f]{64}$/;
 
-/** Whether this deploy's output may be public: a CI log, except Workers Builds', which is the account's own. */
-const inPublicLog = () => !!process.env.CI && !process.env.WORKERS_CI;
+/**
+ * Whether this deploy's output may be public: a CI log, or whatever else isn't a terminal, as the log of a
+ * CI that doesn't say it's one, except Workers Builds', which is the account's own.
+ */
+const inPublicLog = () => (!!process.env.CI || !process.stdout.isTTY) && !process.env.WORKERS_CI;
 
 /**
- * The keys of a Memberful custom app, and the secret its site signs webhooks with, then a Turnstile
- * widget's, and a Resend API key, which only the deployer can give.
+ * The keys of a Memberful custom app, and the secret its site signs webhooks with, then the single
+ * sign-on provider's issuer and the app registered there, a Turnstile widget's keys, and a Resend API
+ * key, which only the deployer can give.
  */
 const GIVEN_KEYS = [
   "MEMBERFUL_URL",
@@ -103,6 +146,9 @@ const GIVEN_KEYS = [
   "MEMBERFUL_CLIENT_SECRET",
   "MEMBERFUL_API_KEY",
   "MEMBERFUL_WEBHOOK_SECRET",
+  "SSO_ISSUER",
+  "SSO_CLIENT_ID",
+  "SSO_CLIENT_SECRET",
   "TURNSTILE_SITE_KEY",
   "TURNSTILE_SECRET_KEY",
   "RESEND_API_KEY",
@@ -474,6 +520,26 @@ function readyD1(file: string, settings: Settings, newWorker: boolean, target: s
   } else {
     refuseAnotherEmbers(file, { id, name }, newWorker, target);
   }
+  // The objects rename their own migrations' records where they run (src/migrations.ts); a database has
+  // no runner of ours in, and wrangler applies its migrations by name, so a copy that ran one under an
+  // old name has its record renamed here first, and applies nothing twice. One that ran the reminders
+  // migration while it kept no reminder's thread has the table it made with no column the queries read,
+  // which is added here, since its migration, renamed above, is marked as run.
+  queryD1(
+    file,
+    [
+      "CREATE TABLE IF NOT EXISTS d1_migrations (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL)",
+      ...MIGRATION_RENAMES.map(
+        ([was, now]) =>
+          `UPDATE d1_migrations SET name = '${now}' WHERE name = '${was}' AND NOT EXISTS (SELECT 1 FROM (SELECT name FROM d1_migrations WHERE name = '${now}') AS there)`,
+      ),
+    ].join("; "),
+  );
+  const [reminders] = queryD1(
+    file,
+    "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'reminders') AS kept, (SELECT count(*) FROM pragma_table_info('reminders') WHERE name = 'parent_id') AS thread",
+  ) as [{ kept: number; thread: number }];
+  if (reminders?.kept === 1 && reminders.thread === 0) queryD1(file, "ALTER TABLE reminders ADD COLUMN parent_id TEXT");
   // CI answers yes to wrangler's question before it applies them.
   d1(["migrations", "apply", D1_BINDING, "--remote", "--config", file], false, { CI: "true" });
 }

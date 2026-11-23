@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { RoomChanges, RoomIconName, RoomId, RoomSettings, User, UserId } from "@ember/protocol";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import type { RoomChanges, RoomGuest, RoomIconName, RoomId, RoomSettings, User, UserId } from "@ember/protocol";
 import { Button } from "@/components/ui/button";
+import { useAccount } from "@/hooks/use-account";
 import { useMounted } from "@/hooks/use-mounted";
 import { navigate, roomPath, roomSettingsPath, type Access } from "@/hooks/use-route";
 import { useTitle } from "@/hooks/use-title";
 import { LogOut, Trash } from "@/components/icons/iconoir";
 import { ApiError, changeRoom, deleteRoom, fetchRoomSettings, isSignedOut, leaveRoom } from "@/lib/api";
 import type { RoomAnswer } from "@/lib/room-list";
+import { HuddlesContext } from "./huddle-button";
 import { AccessSwitch, CheckMark, RoomForm, withChoice } from "./room-form";
+import { RoomGuests } from "./room-guests";
 import { workspaceSectionPath } from "./settings-navigation";
 import { PageHeading, Panel, SettingsPage } from "./settings-page";
 import { UnsavedChanges } from "./unsaved-changes";
@@ -24,6 +27,9 @@ export const CONFIRM_LEAVE = "Are you sure you want to leave this room? Only som
 const membersOf = (settings: RoomSettings) => new Set(settings.people.flatMap((person) => (person.member ? [person.id] : [])));
 
 const sameMembers = (a: ReadonlySet<UserId>, b: ReadonlySet<UserId>) => a.size === b.size && [...a].every((id) => b.has(id));
+
+/** Whether a room's settings allow huddles in it, which they do until they say not. */
+const allowsHuddles = (settings: RoomSettings) => settings.room.huddles !== false;
 
 interface Props {
   roomId: RoomId;
@@ -45,9 +51,12 @@ interface Props {
 /**
  * A room's settings. Whoever can change the room renames it, and with the Everyone switch, which swaps
  * one form for the other in place, opens it to everyone or makes it private to the people whose switches
- * are on; under the form, they can delete it. Leaving with changes asks first. Everyone else sees its
- * name and people, in the form for the room's kind, and can leave a private room. The server refuses
- * the last of its people who could open it, saying why: the page can't tell who they are, as it lists
+ * are on; under the form, they can delete it. Leaving with changes asks first. Where huddles are on,
+ * an administrator's form has the Huddles switch, which says whether the room allows them, as a Slack
+ * channel's settings do for its workspace's owners and admins. Everyone else sees the room's name and
+ * people, in the form for its kind, and can leave a private room, and whoever has no Huddles switch,
+ * the room's creator among them, reads that it has no huddles when it doesn't. The server refuses the
+ * last of its people who could open it, saying why: the page can't tell who they are, as it lists
  * active people, bots among them, and none who are suspended.
  */
 export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, onFailed }: Props) {
@@ -56,6 +65,11 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
   const [icon, setIcon] = useState<RoomIconName | null>(null);
   // Who the private form lets in, starting with the room's members.
   const [chosen, setChosen] = useState<ReadonlySet<UserId>>(new Set());
+  // Whether the Huddles switch is on, starting as the room's settings have it.
+  const [huddles, setHuddles] = useState(true);
+  const huddlesOn = useAccount().huddles;
+  // Whether a huddle is going on in the room, which turning huddles off there would end.
+  const live = useContext(HuddlesContext).live[roomId] !== undefined;
   // Saving or deleting, either of which keeps both buttons from being pressed until it answers.
   const [busy, setBusy] = useState(false);
   // The form the page opened on, which the Everyone switch can move away from and back to, or the one
@@ -74,6 +88,7 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
         setName(settings.room.name);
         setIcon(settings.room.icon);
         setChosen(membersOf(settings));
+        setHuddles(allowsHuddles(settings));
       },
       (error: unknown) => {
         // A page left before its settings load only reports a session that's ended, which goes to sign in.
@@ -106,7 +121,9 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
    * this person, settling with whether it was. The form is then compared with what's saved.
    */
   const send = () => {
-    const changes: RoomChanges = access === "open" ? { name, icon: icon ?? "", kind: access } : { name, icon: icon ?? "", kind: access, memberIds: [...chosen] };
+    // The switch is sent only where it shows, so saving a room while huddles are off, or as anyone but an administrator, leaves its own setting alone.
+    const kept = { name, icon: icon ?? "", ...(huddlesOn && settings?.canChangeHuddles && { huddles }) } satisfies RoomChanges;
+    const changes: RoomChanges = access === "open" ? { ...kept, kind: access } : { ...kept, kind: access, memberIds: [...chosen] };
     const leaving = access === "closed" && !chosen.has(me.id);
     const answered = askForRoom();
     return changeRoom(roomId, changes).then((room) => {
@@ -140,6 +157,23 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
     }, failed);
   };
 
+  /** Shows a guest as their stay's answer named them, adding one who isn't listed yet, in place, and keeping them in the private form's chosen, whose saving would otherwise take their membership out. */
+  const guestSaved = (guest: RoomGuest) => {
+    setSettings((settings) => {
+      if (!settings) return settings;
+      const listed = settings.people.some((person) => person.id === guest.userId);
+      const people = listed
+        ? settings.people.map((person) => (person.id === guest.userId ? { ...person, member: true, guestUntil: guest.untilAt } : person))
+        : [...settings.people, { id: guest.userId, name: guest.name, member: true, guestUntil: guest.untilAt }];
+      return { ...settings, people };
+    });
+    setChosen((chosen) => (chosen.has(guest.userId) ? chosen : new Set([...chosen, guest.userId])));
+  };
+
+  /** Stops marking a guest whose stay has ended, which takes them out of the list once the server has heard of it. */
+  const guestEnded = (userId: UserId) =>
+    setSettings((settings) => settings && { ...settings, people: settings.people.map((person) => (person.id === userId ? { ...person, guestUntil: undefined } : person)) });
+
   const open = access === "open";
   const flip = () => navigate(roomSettingsPath(open ? "closed" : "open", roomId), { replace: true });
   // Whether the form differs from how it loaded or was last saved, the form its address names included.
@@ -147,7 +181,10 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
   const changed =
     !!settings?.canAdminister &&
     !busy &&
-    (name !== settings.room.name || icon !== settings.room.icon || access !== opened || (!open && !sameMembers(chosen, membersOf(settings))));
+    (name !== settings.room.name || icon !== settings.room.icon || access !== opened || (huddlesOn && huddles !== allowsHuddles(settings)) || (!open && !sameMembers(chosen, membersOf(settings))));
+  // The Huddles row is there while huddles are on: with its switch for an administrator, and for anyone
+  // else, the room's creator too, only where the room has none, to say so.
+  const huddlesRow = !huddlesOn || !settings ? null : settings.canChangeHuddles ? { allowed: huddles, onChange: setHuddles, live } : allowsHuddles(settings) ? null : { allowed: false };
   // The Everyone switch moves between the room's two forms, keeping the draft.
   const stays = useCallback((path: string) => path === roomSettingsPath("open", roomId) || path === roomSettingsPath("closed", roomId), [roomId]);
   return (
@@ -174,6 +211,7 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
                 <AccessSwitch person={person} checked={chosen.has(person.id)} onCheckedChange={(checked) => setChosen((chosen) => withChoice(chosen, person, checked))} />
               ))
             }
+            huddles={huddlesRow}
             saving={busy}
             onSave={save}
             ref={roomForm}
@@ -186,6 +224,17 @@ export function RoomSettingsPage({ roomId, access, me, askForRoom, onMissing, on
             <LogOut className="size-[1.3em] shrink-0" />
             <span className="truncate">Leave {settings.room.name}</span>
           </Button>
+        </Panel>
+      )}
+      {settings?.canAdminister && (
+        <Panel>
+          <RoomGuests
+            roomId={roomId}
+            guests={settings.people.filter((person) => person.guestUntil !== undefined)}
+            onSaved={guestSaved}
+            onEnded={guestEnded}
+            onFailed={onFailed}
+          />
         </Panel>
       )}
       {settings?.canAdminister && (

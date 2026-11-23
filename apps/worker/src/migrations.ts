@@ -60,9 +60,40 @@ import appSignInClients from "../migrations/0059_app_sign_in_clients.sql";
 import appScopeWanted from "../migrations/0060_app_scope_wanted.sql";
 import ownAppSignIns from "../migrations/0061_own_app_sign_ins.sql";
 import outsideAi from "../migrations/0062_outside_ai.sql";
+import pins from "../migrations/0080_pins.sql";
+import userGroups from "../migrations/0081_user_groups.sql";
+import dnd from "../migrations/0082_dnd.sql";
+import profileFields from "../migrations/0083_profile_fields.sql";
+import reminders from "../migrations/0084_reminders.sql";
+import reminderPushRetries from "../migrations/0085_reminder_push_retries.sql";
+import statuses from "../migrations/0086_statuses.sql";
+import saves from "../migrations/0087_saves.sql";
+import guests from "../migrations/0088_guests.sql";
+import commands from "../migrations/0089_commands.sql";
+import reminderPushes from "../migrations/0090_reminder_pushes.sql";
+import shortcuts from "../migrations/0091_shortcuts.sql";
+import { MIGRATION_RENAMES } from "./migration-renames";
+import agentAccess from "../migrations/0063_agent_access.sql";
+import sessionTransfers from "../migrations/0064_session_transfers.sql";
+import newcomersAndUnreadCounts from "../migrations/0065_newcomers_and_unread_counts.sql";
+import huddleMessages from "../migrations/0066_huddle_messages.sql";
+import roomHuddles from "../migrations/0067_room_huddles.sql";
+import deletedAccounts from "../migrations/0068_deleted_accounts.sql";
+import boostsByBooster from "../migrations/0069_boosts_by_booster.sql";
+import blocks from "../migrations/0070_blocks.sql";
+import huddleSounds from "../migrations/0071_huddle_sounds.sql";
+import usernames from "../migrations/0072_usernames.sql";
+import reports from "../migrations/0073_reports.sql";
+import pastHuddles from "../migrations/0074_past_huddles.sql";
+import changedHuddles from "../migrations/0075_changed_huddles.sql";
+import sessionAddresses from "../migrations/0076_session_addresses.sql";
+import botRooms from "../migrations/0077_bot_rooms.sql";
+import clearedReports from "../migrations/0078_cleared_reports.sql";
+import sso from "../migrations/0079_sso.sql";
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
+import searchFiltersByRoom from "../search-migrations/0004_search_filters_by_room.sql";
 
 /**
  * The kind of Durable Object whose tables a migration creates or changes. On DO SQLite each object
@@ -146,6 +177,35 @@ export const MIGRATIONS: Migration[] = [
   { name: "0060_app_scope_wanted.sql", scope: "workspace", sql: appScopeWanted },
   { name: "0061_own_app_sign_ins.sql", scope: "workspace", sql: ownAppSignIns },
   { name: "0062_outside_ai.sql", scope: "workspace", sql: outsideAi },
+  { name: "0063_agent_access.sql", scope: "workspace", sql: agentAccess },
+  { name: "0064_session_transfers.sql", scope: "workspace", sql: sessionTransfers },
+  { name: "0065_newcomers_and_unread_counts.sql", scope: "workspace", sql: newcomersAndUnreadCounts },
+  { name: "0066_huddle_messages.sql", scope: "room", sql: huddleMessages },
+  { name: "0067_room_huddles.sql", scope: "workspace", sql: roomHuddles },
+  { name: "0068_deleted_accounts.sql", scope: "workspace", sql: deletedAccounts },
+  { name: "0069_boosts_by_booster.sql", scope: "room", sql: boostsByBooster },
+  { name: "0070_blocks.sql", scope: "workspace", sql: blocks },
+  { name: "0071_huddle_sounds.sql", scope: "workspace", sql: huddleSounds },
+  { name: "0072_usernames.sql", scope: "workspace", sql: usernames },
+  { name: "0073_reports.sql", scope: "workspace", sql: reports },
+  { name: "0074_past_huddles.sql", scope: "workspace", sql: pastHuddles },
+  { name: "0075_changed_huddles.sql", scope: "room", sql: changedHuddles },
+  { name: "0076_session_addresses.sql", scope: "workspace", sql: sessionAddresses },
+  { name: "0077_bot_rooms.sql", scope: "workspace", sql: botRooms },
+  { name: "0078_cleared_reports.sql", scope: "workspace", sql: clearedReports },
+  { name: "0079_sso.sql", scope: "workspace", sql: sso },
+  { name: "0080_pins.sql", scope: "room", sql: pins },
+  { name: "0081_user_groups.sql", scope: "workspace", sql: userGroups },
+  { name: "0082_dnd.sql", scope: "workspace", sql: dnd },
+  { name: "0083_profile_fields.sql", scope: "workspace", sql: profileFields },
+  { name: "0084_reminders.sql", scope: "workspace", sql: reminders },
+  { name: "0085_reminder_push_retries.sql", scope: "workspace", sql: reminderPushRetries },
+  { name: "0086_statuses.sql", scope: "workspace", sql: statuses },
+  { name: "0087_saves.sql", scope: "workspace", sql: saves },
+  { name: "0088_guests.sql", scope: "workspace", sql: guests },
+  { name: "0089_commands.sql", scope: "workspace", sql: commands },
+  { name: "0090_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
+  { name: "0091_shortcuts.sql", scope: "workspace", sql: shortcuts },
 ];
 
 /**
@@ -158,6 +218,7 @@ export const SEARCH_MIGRATIONS: Migration[] = [
   { name: "0001_search_index.sql", scope: "search", sql: searchIndex },
   { name: "0002_search_results.sql", scope: "search", sql: searchResults },
   { name: "0003_search_filters.sql", scope: "search", sql: searchFilters },
+  { name: "0004_search_filters_by_room.sql", scope: "search", sql: searchFiltersByRoom },
 ];
 
 /**
@@ -171,6 +232,23 @@ export function migrate(storage: DurableObjectStorage, scope: Scope): void {
     name TEXT UNIQUE,
     applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
   )`);
+  // This fork's deploys numbered these files before it numbered them as it does now, so a storage that
+  // ran one under its old name keeps the tables it made and the record moves with them: renamed before
+  // the check below, it applies no migration twice. The same renames run for D1, whose migrations
+  // wrangler applies, where no runner of ours is in (scripts/deploy.ts).
+  for (const [was, now] of MIGRATION_RENAMES) {
+    storage.sql.exec(
+      "UPDATE d1_migrations SET name = ? WHERE name = ? AND NOT EXISTS (SELECT 1 FROM (SELECT name FROM d1_migrations WHERE name = ?) AS there)",
+      now,
+      was,
+      now,
+    );
+  }
+  // A storage that ran the reminders migration while it kept no reminder's thread has the table it
+  // made, which the queries read now, and its migration, renamed above, is marked as run: the column
+  // is added here, where applying its file again would find the table and make nothing.
+  const reminderColumns = storage.sql.exec<{ name: string }>("PRAGMA table_info(reminders)").toArray().map(({ name }) => name);
+  if (reminderColumns.length > 0 && !reminderColumns.includes("parent_id")) storage.sql.exec("ALTER TABLE reminders ADD COLUMN parent_id TEXT");
   const applied = new Set(storage.sql.exec<{ name: string }>("SELECT name FROM d1_migrations").toArray().map((row) => row.name));
   for (const migration of scope === "search" ? SEARCH_MIGRATIONS : MIGRATIONS) {
     if (migration.scope !== scope || applied.has(migration.name)) continue;

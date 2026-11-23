@@ -4,6 +4,7 @@ import {
   startingInvolvement,
   uploadPartPath,
   uploadsPath,
+  workspaceSocketQuery,
   type ClientFrame,
   type DirectRoom,
   type Me,
@@ -19,6 +20,7 @@ import {
   type User,
   type UserId,
   type WorkspaceServerFrame,
+  type WorkspaceSocketParams,
 } from "@ember/protocol";
 import type { ModelFormat, ThinkingLevel } from "@ember/protocol/assistant";
 import { applyD1Migrations, evictDurableObject, reset, runInDurableObject, type D1Migration } from "cloudflare:test";
@@ -225,11 +227,42 @@ export async function withWorkspaceEnv(changes: Partial<Env>, run: () => Promise
   }
 }
 
+/**
+ * Has the Workspace count the addresses it's told to email a link to join with, which the Worker tells
+ * it once it has answered the ask, without waiting for it, so an answer doesn't say the Workspace has
+ * been told. `told` waits until it has been told `n` of them, each on its way by then, `holdUntil`
+ * keeps it from taking any until a promise ends, as if the Worker's word were still on its way, and
+ * `stop` has it take them as it did.
+ */
+export async function countAddressesToEmail(): Promise<{ told: (n: number) => Promise<void>; holdUntil: (held: Promise<void>) => void; stop: () => void }> {
+  let count = 0;
+  let held: Promise<void> | undefined;
+  let stop!: () => void;
+  await runInDurableObject(workspaceStub(), (instance: Workspace) => {
+    const prototype = Object.getPrototypeOf(instance) as Pick<Workspace, "emailJoinLink">;
+    const emailJoinLink = prototype.emailJoinLink;
+    prototype.emailJoinLink = async function (this: Workspace, ...asked) {
+      const waits = held;
+      if (waits) count++;
+      await waits;
+      emailJoinLink.apply(this, asked);
+      if (!waits) count++;
+    };
+    stop = () => void (prototype.emailJoinLink = emailJoinLink);
+  });
+  return {
+    // Looked at again and again, since workerd can't wake a test from inside the Workspace.
+    told: (n) => vi.waitFor(() => expect(count).toBeGreaterThanOrEqual(n), { interval: 2, timeout: 5000 }),
+    holdUntil: (until) => void (held = until),
+    stop,
+  };
+}
+
 /** The search index's Durable Object. */
 export const searchIndexStub = () => searchIndex(env as unknown as Env);
 
 /** The calls the Workspace makes on a room, as a test answers them in every room's stead. */
-export type RoomStandIn = Partial<Pick<ChatRoom, "revoke" | "removeMessagesBy" | "reindex" | "authors">>;
+export type RoomStandIn = Partial<Pick<ChatRoom, "revoke" | "removeMessagesBy" | "removeEverythingBy" | "reindex" | "authors">>;
 
 /** Has `rooms` answer the Workspace's calls to rooms until the function it answers with is called, which gives the rooms back. */
 export async function standInForRooms(rooms: RoomStandIn): Promise<() => Promise<void>> {
@@ -412,9 +445,9 @@ export type Socket = Awaited<ReturnType<typeof openSocket>>;
  * Opens a room socket as `name` (or in an existing session), queues every frame it receives, and
  * waits for its welcome. Its address names the room protocol's revision, as the app's do, and says
  * whether its tab is shown only when `params` does. An `outdated` tab's names nothing, as the app's
- * did before rich text.
+ * did before rich text, and a number names that revision, as an app from before the protocol's does.
  */
-export async function connect(room: string, as: string | Session, params?: RoomSocketParams | "outdated") {
+export async function connect(room: string, as: string | Session, params?: RoomSocketParams | "outdated" | number) {
   const socket = await openSocket(room, typeof as === "string" ? await signIn(as) : as, params);
   const welcome = await socket.next("welcome");
   return { ...socket, welcome, me: welcome.you };
@@ -458,8 +491,8 @@ export function framesOf<Frame extends { type: string }>(ws: WebSocket) {
 }
 
 /** Opens a room socket in `session` and queues every frame it receives. */
-async function openSocket(room: string, session: Session, params?: RoomSocketParams | "outdated") {
-  const query = params === "outdated" ? "" : params ? roomSocketQuery(params) : `?protocol=${ROOM_PROTOCOL}`;
+async function openSocket(room: string, session: Session, params?: RoomSocketParams | "outdated" | number) {
+  const query = params === "outdated" ? "" : typeof params === "number" ? `?protocol=${params}` : params ? roomSocketQuery(params) : `?protocol=${ROOM_PROTOCOL}`;
   const response = await api(`/api/rooms/${room}/socket${query}`, upgrade(session.cookie, session.ip));
   const ws = response.webSocket;
   if (!ws) throw new Error(`No socket: ${response.status} ${await response.text()}`);
@@ -498,9 +531,12 @@ export async function settle(...clients: Socket[]): Promise<void> {
   }
 }
 
-/** Opens a workspace socket in `session`, as a tab does, and queues what the Workspace sends on it after its welcome. */
-export async function openWorkspaceSocket(session: Session) {
-  const response = await api("/api/socket", upgrade(session.cookie));
+/**
+ * Opens a workspace socket in `session`, as a tab does, and queues what the Workspace sends on it after
+ * its welcome. Its address says whether the tab is shown only if `params` does.
+ */
+export async function openWorkspaceSocket(session: Session, params?: WorkspaceSocketParams) {
+  const response = await api(`/api/socket${params ? workspaceSocketQuery(params) : ""}`, upgrade(session.cookie));
   if (!response.webSocket) throw new Error(`No socket: ${response.status} ${await response.text()}`);
   const ws = response.webSocket;
   const frames: WorkspaceServerFrame[] = [];
@@ -518,10 +554,21 @@ export async function openWorkspaceSocket(session: Session) {
     return frames.shift()!;
   }
 
-  /** Whether the Workspace still answers on it. A ping with more than its type reaches the Workspace itself. */
+  /**
+   * Whether the Workspace still answers on it, and nothing else has come: a ping with more than its type
+   * reaches the Workspace itself, whose pong comes after everything it sent before it, so a frame read on
+   * the way to the pong is one that was queued and has landed, and none is one that was never coming.
+   */
   async function answers(): Promise<boolean> {
+    const queued = frames.length;
+    frames.length = 0;
     ws.send(JSON.stringify({ type: "ping", nonce: crypto.randomUUID() }));
-    return (await next()).type === "pong";
+    let heard = queued;
+    for (;;) {
+      const frame = await next();
+      if (frame.type === "pong") return heard === 0;
+      heard++;
+    }
   }
 
   const welcome = await next();

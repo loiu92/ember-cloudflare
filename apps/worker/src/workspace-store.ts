@@ -1,34 +1,39 @@
 import {
   ASSISTANT_ID,
   ASSISTANT_NAME,
+  DELETED_PERSON_NAME,
   MAX_FAVORITES,
   MAX_OTHER_ADDRESSES,
   MAX_PUSH_SUBSCRIPTIONS,
+  MAX_SAVES,
   MAX_SHARED_ORDER,
   NAVIGATION_SLOTS,
   PASSWORD_RESET_CODE_TRIES,
   RECENT_SEARCHES,
-  SUGGESTED_PEOPLE,
   emailDomainOf,
   isHost,
   isRoomIcon,
   mailboxOf,
   mailboxText,
   parseSearch,
-  suggestedCount,
   type Account,
+  type Blocks,
   type BotChanges,
   type BotRoom,
+  type ChangedBlocks,
   type CloseCode,
   type DirectRoom,
   type EmailInvitation,
   type EmailLinkKind,
   type Favorites,
+  type GroupId,
   type Involvement,
   type NavigationIconChanges,
   type NavigationIcons,
+  type PersonMood,
   type PersonRole,
   type Profile,
+  type ProfileFieldEntry,
   type PushSubscriptionKeys,
   type Role,
   type Room,
@@ -36,12 +41,16 @@ import {
   type RoomId,
   type RoomKind,
   type RoomSettings,
+  type SavedMessage,
   type Search,
   type SharedRoom,
   type SidebarRoom,
   type User,
   type UserId,
   type UserStatus,
+  type UserGroup,
+  SUGGESTED_PEOPLE,
+  suggestedCount,
 } from "@ember/protocol";
 import {
   ANSWER_LENGTHS,
@@ -61,14 +70,16 @@ import {
   type WebTool,
   type YourAssistantChanges,
 } from "@ember/protocol/assistant";
-import type { AgentProfile, AgentRoom } from "@ember/protocol/agents";
+import type { AgentAccess, AgentProfile, AgentRoom } from "@ember/protocol/agents";
 import type { AppId } from "@ember/protocol/apps";
-import type { LiveHuddle } from "@ember/protocol/huddles";
+import type { Command, Commands, EventSubscription, Shortcut } from "@ember/protocol/bots";
+import { ALL_HUDDLE_SOUNDS, PAST_HUDDLES_LISTED, type HuddleSoundChanges, type HuddleSounds, type LiveHuddle, type PastHuddle } from "@ember/protocol/huddles";
+import { DEFAULT_GROUPS_CLAIM, DEFAULT_SSO_NAME } from "@ember/protocol/sso";
 import { statement, type Db, type Statement } from "./db";
 import type { StoredPicture } from "./files/pictures";
-import { messagePayload, type PushPayload } from "./push/payload";
-import { ADDRESS_TAG_PREFIX, EVERYONE, SESSION_TAG_PREFIX, type Revocation } from "./revocations";
-import type { RoomEvent } from "./room-log";
+import { INVITATION_TTL_SECONDS, invitationPayload, messagePayload, type PushPayload } from "./push/payload";
+import { ADDRESS_TAG_PREFIX, EVERYONE, OPEN_ROOMS_ONLY, SESSION_TAG_PREFIX, taggedAddress, type Revocation } from "./revocations";
+import type { HuddleChange, RoomEvent } from "./room-log";
 
 // The account, its people, their sessions and their rooms, kept by the Workspace in its own SQLite
 // storage or in D1 (see db.ts).
@@ -88,7 +99,7 @@ const SUSPENDED = 3;
 /** The role for everyone who neither runs the workspace nor is a bot. */
 const MEMBER = 0;
 /** The role for the people who run the workspace. */
-const ADMINISTRATOR = 1;
+export const ADMINISTRATOR = 1;
 /** The role for bots. */
 const BOT = 2;
 /** The roles and statuses, each at the number it stores. */
@@ -101,19 +112,23 @@ const NEW_ACCOUNT_SETTINGS = JSON.stringify({ restrict_room_creation_to_administ
 /**
  * What a new account's settings and custom CSS read as: no tagline, translation buttons hidden, no CSS,
  * anyone may create rooms, no custom domain, people join with the join link but can't sign up without
- * it, nor join with Memberful or an email domain, members sign in with passwords, and the rail has its
- * own icons.
+ * it, nor join with Memberful or an email domain, members sign in with passwords, the rail has its
+ * own icons, and in huddles cameras may go on and screens be shared.
  */
 export const NEW_ACCOUNT_LOOKS = {
   tagline: "",
   hideTranslationButtons: true,
   customStyles: "",
   restrictRoomCreation: false,
+  huddleCameras: true,
+  huddleScreens: true,
   customDomain: null,
   joinLink: true,
   openSignUp: false,
   memberfulJoin: false,
   memberfulSignIn: false,
+  ssoJoin: false,
+  ssoSignIn: false,
   emailDomainSignUp: false,
   emailDomains: [] as string[],
   navigationIcons: {},
@@ -147,18 +162,38 @@ export interface JoinableAccount extends Omit<Account, "logo" | "huddles"> {
   assistantPromptTemplate: string | null;
   /** The SFU app huddles run through, while an administrator has them on, or else null. */
   huddles: SavedHuddles | null;
+  /** The single sign-on provider an administrator set up, or else null. */
+  sso: SavedSso | null;
   /** Whether AI apps may connect to Ember as the people in it, which an administrator turns on. Off until one does. */
   outsideAi: boolean;
   /** Where a deploy puts Ember, as the latest page opened there told it, or null until one has (`EmberAddresses.deployed`). */
   deployedAddress: string | null;
   /** The custom domains Ember has moved away from, newest first, which may still reach it (`EmberAddresses.others`). */
   otherAddresses: string[];
+  /** The words and phrases Blocked words keeps out, as administrators listed them, which nobody else sees. */
+  blockedWords: string[];
 }
 
 /** A Turnstile widget's keys as the account keeps them: its site key, and its secret key sealed (`seal`). */
 export interface SavedTurnstileKeys {
   siteKey: string;
   sealedSecretKey: string;
+}
+
+/**
+ * The single sign-on provider as the account keeps it: its issuer and the app registered there, its
+ * secret sealed (`seal`), each null while the deployment's secrets give them, and what the Single
+ * sign-on card sets besides (`SsoSettings`).
+ */
+export interface SavedSso {
+  issuer: string | null;
+  clientId: string | null;
+  sealedClientSecret: string | null;
+  name: string;
+  scopes: string[];
+  groupsClaim: string;
+  allowedGroups: string[];
+  linksVerifiedEmails: boolean;
 }
 
 /**
@@ -172,10 +207,20 @@ export interface SavedMemberfulKeys {
   sealedSecrets: string;
 }
 
-/** A Realtime SFU app's keys as the account keeps them: its ID, and its secret sealed (`seal`). */
+/**
+ * A Realtime SFU app's keys as the account keeps them: its ID, and its secret sealed (`seal`), and with
+ * them the TURN key huddles' relay goes by, or null while they have no relay.
+ */
 export interface SavedHuddles {
   appId: string;
   sealedAppSecret: string;
+  relay: SavedRelay | null;
+}
+
+/** A TURN key as the account keeps it: its ID, and its API token sealed (`seal`). */
+export interface SavedRelay {
+  keyId: string;
+  sealedApiToken: string;
 }
 
 /**
@@ -228,8 +273,8 @@ export interface NewAccount {
  * What `WorkspaceStore.changeAccount` changes: the name, the tagline, the settings workspace settings'
  * switches change, the custom domain and the ones it moved away from, the navigation icons whose slots
  * change, the From address, the sealed Resend API key, Turnstile's keys, Memberful's, the SFU app
- * huddles run through, and the domains Email domain lets in. Memberful's two settings change together,
- * or not at all, as `memberful`.
+ * huddles run through, the domains Email domain lets in, and the words Blocked words keeps out.
+ * Memberful's two settings change together, or not at all, as `memberful`.
  */
 export type AccountChange = Partial<
   Pick<
@@ -238,6 +283,8 @@ export type AccountChange = Partial<
     | "tagline"
     | "hideTranslationButtons"
     | "restrictRoomCreation"
+    | "huddleCameras"
+    | "huddleScreens"
     | "customDomain"
     | "otherAddresses"
     | "joinLink"
@@ -249,9 +296,12 @@ export type AccountChange = Partial<
     | "turnstileKeys"
     | "memberfulKeys"
     | "huddles"
+    | "sso"
+    | "blockedWords"
   >
 > & {
   memberful?: Pick<Account, "memberfulJoin" | "memberfulSignIn">;
+  ssoSwitches?: Pick<Account, "ssoJoin" | "ssoSignIn">;
   navigationIcons?: NavigationIconChanges;
 };
 
@@ -265,6 +315,8 @@ export interface NewPerson {
   avatar: StoredPicture | null;
   /** The administrator whose invitation they joined with, if they did. */
   invitedBy?: UserId;
+  /** Whether they joined with a link Ember emailed to their address, which proves it's theirs. */
+  emailVerified?: boolean;
 }
 
 /** A session and the person it signs in. */
@@ -281,13 +333,32 @@ export interface StoredSession {
 
 /** Someone as the people directory lists them, with when they last changed, which their avatar's address follows. */
 export interface DirectoryEntry extends User {
+  /** The username they picked, or null while they have none. */
+  username: string | null;
   bio: string | null;
+  /** What they wear beside their name, or null while they wear none. */
+  mood: PersonMood | null;
   role: Role;
   status: UserStatus;
   updatedAt: string;
   /** Whether they're an AI agent, @ember or one an administrator made, deleted ones too. */
   agent: boolean;
+  /**
+   * Whom an AI agent is kept for: "admins" for one only administrators can ask, "admin-dms" for one only
+   * their direct messages reach, which nobody else is told of, even once it's deleted, or null for an
+   * agent anyone can ask, and for anyone else.
+   */
+  keptFor: KeptFor | null;
 }
+
+/** A group as its tables keep it, with everyone in it, named as they are now. */
+export interface StoredGroup {
+  id: GroupId;
+  name: string;
+  members: User[];
+}
+/** Whom an AI agent that not everyone can ask is kept for (`AgentAccess`). */
+export type KeptFor = Exclude<AgentAccess, "everyone">;
 
 /** Someone as the people directory lists them, with their email address, which their profile shows too. */
 export interface ProfileEntry extends DirectoryEntry {
@@ -321,6 +392,8 @@ export interface AssistantPicks {
 export interface NewLinkedPerson {
   id: UserId;
   name: string;
+  /** The username they start with, or null for none. */
+  username: string | null;
   /** Their Memberful account's email address, or null for one Ember can't keep. */
   emailAddress: string | null;
 }
@@ -335,6 +408,46 @@ export interface LinkedAccount {
   subject: string;
   name: string | null;
   emailAddress: string | null;
+}
+
+/**
+ * What a sign-in with an account elsewhere keeps of the provider's word besides what the account says of
+ * itself: the provider's session it came from (OpenID Connect's `sid`), if it named one, and the refresh
+ * token it gave, sealed (`seal`), to ask it again with at `dueAt`, if it gave one.
+ */
+export interface SignInKept {
+  sid: string | null;
+  refresh: { sealedToken: string; dueAt: number } | null;
+}
+
+/** What a sign-in at a Memberful site keeps: nothing more. */
+export const NOTHING_KEPT: SignInKept = { sid: null, refresh: null };
+
+/** Who a back-channel logout signs out: everyone signed in with the account `subject` names, or with the provider's session `sid`, or with both, by `startedBy`. */
+export interface LoggedOut {
+  subject: string | null;
+  sid: string | null;
+  /**
+   * Whether it ends every session of whoever the account with `subject` is linked to, however they
+   * signed in, as long as they need a membership, rather than only those the account signed in.
+   */
+  everywhere?: boolean;
+  /** The sessions it ends are those started by then, in milliseconds, so that one signed in after the provider said so stays. */
+  startedBy: number;
+}
+
+/** The sessions a back-channel logout ended, and whether it queued any revocations to close their sockets in rooms. */
+export interface LoggedOutSessions {
+  ended: Array<{ id: string; userId: UserId }>;
+  queued: boolean;
+}
+
+/** A refresh token the Workspace is due to ask the single sign-on provider with: the account it's for, and the token, sealed. */
+export interface DueRefresh {
+  subject: string;
+  sealedToken: string;
+  /** Since when the provider hasn't answered for it, in milliseconds since the epoch, or null while it has. */
+  failingSince: number | null;
 }
 
 /** Whose account connecting one elsewhere is for, and the digest of the password that checked out to start it, or "" without one. */
@@ -352,6 +465,19 @@ export interface LinkedPerson {
   membershipNeeded: boolean;
   /** When their membership was last read, by the Workspace's clock: as a sign-in began, or a check asked Memberful. */
   checkedAt: number;
+  /** Whether another account of theirs, at a way in that's open, lets them in as last read, when this one's lapsing suspends nobody. */
+  otherwiseLetIn: boolean;
+}
+
+/**
+ * The ways in whose accounts can keep someone in while another of theirs lapses (`LinkedPerson.otherwiseLetIn`):
+ * those open and still being read, `checked`, as a Memberful site whose admin API the Workspace asks, and
+ * those open whose accounts count only while the Workspace keeps asking about them with a refresh token,
+ * `refreshed`, as a single sign-on provider. An account nobody asks about anymore says nothing of now.
+ */
+export interface OtherWays {
+  checked: string[];
+  refreshed: string[];
 }
 
 /** A membership the Workspace has yet to check with the Memberful site's admin API. */
@@ -384,7 +510,9 @@ export interface SavedPasswordReset {
 /**
  * The sessions a new password ends, all of its person's but `kept`, the one saving it, whose sockets it
  * closes with `code` in every room they're in, due at `dueAt`, and the push subscriptions it forgets with
- * them, all of theirs but those at `pushEndpoint`, its browser's.
+ * them, all of theirs but those at `pushEndpoint`, its browser's. `kept` stays signed in, but the sign-in
+ * links it showed before `dueAt` end with them, since one that someone else has would go on signing them
+ * in (migrations/0064_session_transfers.sql).
  */
 export interface EndedByPassword {
   kept: string;
@@ -406,18 +534,26 @@ export interface StoredBot extends DirectoryEntry {
   rooms: BotRoom[];
 }
 
-/** The same, with where its webhook delivers, or null for nowhere, as its edit page shows it. */
+/**
+ * The same, with where its webhook delivers, or null for nowhere, and the open rooms it's kept to, or
+ * null while it's in every open room, as its edit page shows it.
+ */
 export interface StoredBotSettings extends StoredBot {
   webhookUrl: string | null;
+  pickedRooms: BotRoom[] | null;
 }
 
-/** A bot to add: its id, name and token, where its webhook delivers, or null for nowhere, and its avatar, or null for none. */
+/**
+ * A bot to add: its id, name and token, where its webhook delivers, or null for nowhere, its avatar, or
+ * null for none, and the open rooms it's kept to, or null for every open room.
+ */
 export interface NewStoredBot {
   id: UserId;
   name: string;
   token: string;
   webhookUrl: string | null;
   avatar: StoredPicture | null;
+  rooms: RoomId[] | null;
 }
 
 /**
@@ -450,14 +586,15 @@ export interface AnsweringAgent extends Pick<AgentSetup, "instructions" | "promp
 
 /**
  * An agent as the AI assistant tab lists it: as the people directory lists it, with what it does, its
- * model, what it may do on the web, and the open rooms it's kept to, by name, or null while it's in every
- * one.
+ * model, what it may do on the web, who can ask it, and the open rooms it's kept to, by name, or null
+ * while it's in every one.
  */
 export interface StoredAgent extends DirectoryEntry {
   description: string;
   model: string;
   modelName: string;
   webTools: WebTool[];
+  access: AgentAccess;
   rooms: AgentRoom[] | null;
 }
 
@@ -469,25 +606,39 @@ export interface StoredAgentSettings extends StoredAgent, AgentSetup {
 }
 
 /**
- * An agent to add, made by `createdBy`: its id and name, its setup, the open rooms it's in, or null for
- * every one, and its avatar, or null for none.
+ * An agent as Available Agents lists it to someone who can ask it: as the people directory lists it, with
+ * what it does, who can ask it, and the rooms it shares with them, by name, or null while it's in every
+ * open one.
+ */
+export interface AvailableStoredAgent extends DirectoryEntry {
+  description: string;
+  access: AgentAccess;
+  rooms: AgentRoom[] | null;
+}
+
+/**
+ * An agent to add, made by `createdBy`: its id and name, its setup, who can ask it, the open rooms it's
+ * in, or null for every one, and its avatar, or null for none.
  */
 export interface NewStoredAgent extends AgentSetup {
   id: UserId;
   name: string;
+  access: AgentAccess;
   rooms: RoomId[] | null;
   avatar: StoredPicture | null;
   createdBy: UserId;
 }
 
 /**
- * A change to an agent by `changedBy`: its new name, if it has one, its setup as it is then, the open
- * rooms it's in then, or null for every one, if they changed, and its new avatar, or none, if that
- * changed, with the key of the one it had, for R2 to delete at `dueAt`.
+ * A change to an agent by `changedBy`: its new name, if it has one, its setup as it is then, who can ask
+ * it then, if that changed, the open rooms it's in then, or null for every one, if they changed, and its
+ * new avatar, or none, if that changed, with the key of the one it had, for R2 to delete at `dueAt`. One
+ * only administrators' direct messages reach from then on leaves every room, whatever `rooms` says.
  */
 export interface StoredAgentChange {
   name?: string;
   setup: AgentSetup;
+  access?: AgentAccess;
   rooms?: RoomId[] | null;
   avatar?: { avatar: StoredPicture | null; previous: string | null; dueAt: number };
   changedBy: UserId;
@@ -500,9 +651,33 @@ export interface AvatarChange {
   dueAt: number;
 }
 
-/** What `WorkspaceStore.changeProfile` saves: someone's profile, and the digest of a new password, or null to keep theirs. */
-export interface ProfileChange extends Pick<Profile, "name" | "emailAddress" | "bio"> {
+/** What `WorkspaceStore.changeProfile` saves: someone's profile, their mood, the digest of a new password or null to keep theirs, and what they gave the workspace's fields, or none. */
+export interface ProfileChange extends Pick<Profile, "name" | "username" | "emailAddress" | "bio" | "mood"> {
   passwordDigest: string | null;
+  fieldValues: Record<string, string> | null;
+}
+
+/** The statements saving what `userId` gave the workspace's fields: upserting each value, and taking out the rows of the ones cleared with "". */
+const changeProfileFieldValuesStatements = (userId: UserId, values: Record<string, string>): Statement[] =>
+  Object.entries(values).map(([fieldId, value]) =>
+    value === ""
+      ? statement(`DELETE FROM profile_field_values WHERE field_id = ? AND user_id = ?`, fieldId, userId)
+      : statement(
+          `INSERT INTO profile_field_values (field_id, user_id, value) VALUES (?, ?, ?) ON CONFLICT (field_id, user_id) DO UPDATE SET value = excluded.value`,
+          fieldId,
+          userId,
+          value,
+        ),
+  );
+
+/** A field of the workspace's profiles, as its tables keep it. */
+export interface StoredProfileField {
+  id: string;
+  name: string;
+  /** The choices it takes, or null for free text. */
+  options: string[] | null;
+  /** Where it comes in the profile, fields before it coming first. */
+  position: number;
 }
 
 /** What someone's avatar is drawn from: the picture they uploaded, if any, else their name, or the bot picture for a bot. */
@@ -510,6 +685,8 @@ export interface AvatarOwner {
   name: string;
   bot: boolean;
   avatar: StoredPicture | null;
+  /** Whom they're kept for, if they're an AI agent not everyone can ask (`DirectoryEntry.keptFor`). */
+  keptFor: KeptFor | null;
 }
 
 /** Someone as the people directory lists them, with the avatar they've uploaded, or a bot was given. */
@@ -522,10 +699,41 @@ export interface SidebarRooms {
   rooms: SidebarRoom[];
   favorites: Favorites;
   sharedOrder: RoomId[];
+  /** People to start a DM with, as `suggestedCount` says. */
   suggestions: User[];
   huddles: Record<RoomId, LiveHuddle>;
+  blocks: Blocks;
+  /** Which of a huddle's sounds they hear. */
+  huddleSounds: HuddleSounds;
   /** The workspace's first room, if they're given the welcome card. */
   invitationRoomId: RoomId | null;
+  /** How many open reports an active administrator sees, which leave out the reports of them, or else null. */
+  openReports: number | null;
+}
+
+interface BlockedRow {
+  blocked_id: UserId;
+}
+
+interface DirectLevelRow {
+  room_id: RoomId;
+  involvement: Involvement;
+}
+
+/** Whom someone has blocked, as a change to their blocks leaves them, and their DM with that person alone, when it hid it or showed it again. */
+const blocksChange = (blocked: BlockedRow[], counted: { version: number } | undefined, direct: DirectLevelRow[]): ChangedBlocks => ({
+  blocks: { userIds: blocked.map((row) => row.blocked_id), version: counted?.version ?? 0 },
+  direct: direct[0] ? { roomId: direct[0].room_id, involvement: direct[0].involvement } : null,
+});
+
+/**
+ * What deleting an account did: whether it queued revocations or purges, whom everyone who had blocked
+ * them has blocked now, and whether it cleared any report of them, which administrators' Reports lists show.
+ */
+export interface DeletedAccount {
+  queued: boolean;
+  blockers: Array<{ userId: UserId; blocks: Blocks }>;
+  reportsCleared: boolean;
 }
 
 /** What became of a room's report of its huddle. */
@@ -538,21 +746,23 @@ export interface ReportedHuddle {
 
 /** What changing a room changed, and who's in it then. */
 export interface SavedRoomChange {
-  /** Whether its name, kind or icon changed. */
+  /** Whether its name, kind or icon changed, or whether it allows huddles. */
   roomChanged: boolean;
   memberIds: UserId[];
   /** Who the change put in the room. */
   addedIds: UserId[];
   /** Who it took out, whose sockets there it queued closing. */
   removedIds: UserId[];
+  /** Whether it made a room open to everyone private, which queued turning away what AI apps that reach only open rooms were let send there. */
+  madePrivate: boolean;
   /** Whether the shared order ranks the room, which the sidebars of the people it put in have left out. */
   ranked: boolean;
 }
 
 /** What applying events from a room's log changed. */
 export interface AppliedEvents {
-  /** Whose unread marks changed, and when the message each is now marked unread as of came, or null for one now read. */
-  marks: Map<UserId, string | null>;
+  /** Whose unread marks changed, and how each is marked now, or null for one now read. */
+  marks: Map<UserId, Mark | null>;
   /** When messages came in a DM, when the latest did and everyone in the DM; null otherwise. */
   active: { at: string; userIds: UserId[] } | null;
   /** The new messages' pushes, oldest message first, when they were asked for. */
@@ -561,6 +771,15 @@ export interface AppliedEvents {
   webhooks: MessageWebhook[];
   /** The new messages @ember and the agents are to answer, oldest first, each agent mentioned once. */
   asks: AssistantAsk[];
+}
+
+/**
+ * Someone's unread mark on a room: when the first message they haven't seen came, and in a DM how many
+ * have come since, which a room doesn't count.
+ */
+export interface Mark {
+  at: string;
+  count?: number;
 }
 
 /**
@@ -575,6 +794,14 @@ export interface MessagePush {
   deliveries: PushDelivery[];
 }
 
+/**
+ * The pushes of an invitation into a huddle, which are as a message's but for how long a push service
+ * keeps each for a browser that's away, in seconds.
+ */
+export interface InvitationPush extends MessagePush {
+  ttl: number;
+}
+
 /** One of someone's push subscriptions, with the user agent of the browser that saved it, if it sent one. */
 export interface StoredPushSubscription {
   id: number;
@@ -582,7 +809,7 @@ export interface StoredPushSubscription {
   userAgent: string | null;
 }
 
-/** A subscription a message is pushed to, and the count its push sets the app's badge to. */
+/** A subscription a message or an invitation is pushed to, and the count its push sets the app's badge to. */
 export interface PushDelivery {
   subscriptionId: number;
   endpoint: string;
@@ -602,6 +829,11 @@ export interface MessageWebhook {
   /** The room's name, or null for a DM. */
   roomName: string | null;
   botId: UserId;
+  /**
+   * Whether the bot watches the room's message events, which makes the delivery one of those: shaped as
+   * a command's is, rather than as a mention's delivery is.
+   */
+  subscribed: boolean;
 }
 
 /**
@@ -649,13 +881,20 @@ export interface PendingRevocation extends Revocation {
   roomId: RoomId;
 }
 
-/** A room the outbox has yet to ask to delete a banned person's messages. */
+/** A room the outbox has yet to ask to delete the messages of someone banned, or who deleted their account. */
 export interface PendingPurge {
   id: number;
   roomId: RoomId;
   userId: UserId;
   /** When their ban was lifted, if it has been, after which what they write stays. */
   liftedAt: string | null;
+  /** Whether they deleted their account, which takes their boosts too, and whatever they wrote whenever they wrote it. */
+  deletedAccount: boolean;
+}
+
+/** A purge as `DUE_PURGES` reads it. */
+interface PendingPurgeRow extends Omit<PendingPurge, "deletedAccount"> {
+  deletedAccount: number;
 }
 
 interface SessionRow {
@@ -688,9 +927,19 @@ const INSERT_SESSION_IF_UNCHANGED = `INSERT INTO sessions (id, user_id, token_di
 /** Keeps a digest made now of the password someone signed in with, in place of the one checked, unless it has changed since. */
 const REHASH_PASSWORD = `UPDATE users SET password_digest = ? WHERE id = ? AND password_digest = ?`;
 
-/** The same, for someone signing in with an account elsewhere that's linked to them, unless they've stopped being active. */
-const INSERT_LINKED_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at)
-  SELECT ?1, id, ?2, ?3, ?4, ?5, ?5, ?5 FROM users WHERE id = ?6 AND status = ${ACTIVE}`;
+/**
+ * The same, for someone signing in with an account elsewhere that's linked to them, unless they've
+ * stopped being active, recording its issuer, ?7, and the provider's session it came from, ?8, if any.
+ */
+const INSERT_LINKED_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at, identity_issuer, identity_sid)
+  SELECT ?1, id, ?2, ?3, ?4, ?5, ?5, ?5, ?7, ?8 FROM users WHERE id = ?6 AND status = ${ACTIVE}`;
+
+/** The same, for someone new who signed in with an account elsewhere, whom the same batch adds. */
+const INSERT_IDENTITY_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at, identity_issuer, identity_sid)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6, ?7, ?8)`;
+
+/** Keeps the refresh token ?3, sealed, that a single sign-on provider gave for the account at issuer ?1 with subject ?2, to ask it again with at ?4, as a sign-in that just had its word. */
+const KEEP_REFRESH_TOKEN = `UPDATE identities SET refresh_token = ?3, refresh_due_at = ?4, refresh_failing_since = NULL WHERE issuer = ?1 AND subject = ?2`;
 
 /** What `email_links.kind` holds for an invitation, and for a link someone asked for with an address at the email domains. */
 const INVITATION = "'invitation'";
@@ -775,6 +1024,18 @@ const COUNT_EMAIL_LINK_REQUEST = `INSERT INTO email_link_requests (email_address
 const UNCOUNT_EMAIL_LINK_REQUEST = `UPDATE email_link_requests SET count = count - 1 WHERE email_address = lower(?1) AND counted_since = ?2 AND count > 0`;
 
 /**
+ * A change that leaves what's stored as it was, for the batch of a lookup whose answer mustn't say, by
+ * how soon it comes, whether it found anything to change: a Durable Object keeps its answers back until
+ * what it wrote is stored for good, and D1 takes longer over a batch that writes, so a lookup that wrote
+ * only for some addresses would answer those later. It counts a time nobody was asked for, under a name
+ * no address is counted under, since they're counted in lowercase, and forgets it.
+ */
+const passingChange = (): Statement[] => [
+  statement(`INSERT OR REPLACE INTO email_link_requests (email_address, counted_since, count) VALUES ('Nobody', '', 0)`),
+  statement(`DELETE FROM email_link_requests WHERE email_address = 'Nobody'`),
+];
+
+/**
  * Keeps the code the person ?1 was emailed to reset their password, whose digest is ?2, in place of any
  * they had, for the address ?3 and the password whose digest is ?4, made at ?5 and working until ?6, and
  * not tried yet.
@@ -800,11 +1061,28 @@ const TRY_PASSWORD_RESET = `UPDATE password_resets SET attempts = attempts + 1 W
 /** Whose that code is, if its digest is ?3. */
 const PASSWORD_RESET_HOLDER = `SELECT user_id FROM password_resets WHERE ${WORKING_PASSWORD_RESET} AND code_digest = ?3`;
 
+/** The active person whose email address is exactly ?, and their password's digest, unless they have no password. */
+const PASSWORD_FOR = `SELECT id, password_digest FROM users WHERE email_address = ? AND status = ${ACTIVE} AND password_digest <> ''`;
+
+interface PasswordRow {
+  id: UserId;
+  password_digest: string;
+}
+
+/** The person `PASSWORD_FOR` found, if anyone. */
+const passwordIn = ([row]: PasswordRow[]) => (row ? { userId: row.id, passwordDigest: row.password_digest } : null);
+
 /** The lowercase email addresses, among those in ?1, a JSON array, that someone has whatever their case. */
 const TAKEN_EMAIL_ADDRESSES = `SELECT lower(email_address) AS email_address FROM users WHERE lower(email_address) IN (SELECT lower(value) FROM json_each(?1))`;
 
-/** The people the accounts at issuer ?1 with the subjects ?2, a JSON array, are linked to, with when each account's membership was last read. */
-const LINKED_PEOPLE = `SELECT identities.subject, users.id, users.status, NOT ${NEEDS_NO_MEMBERSHIP} AS membership_needed, identities.checked_at
+/**
+ * The people the accounts at issuer ?1 with the subjects ?2, a JSON array, are linked to, with when each
+ * account's membership was last read, and whether another account of theirs lets them in as last read:
+ * one at the issuers ?3, a JSON array, or at the issuers ?4 while it keeps a refresh token (`OtherWays`).
+ */
+const LINKED_PEOPLE = `SELECT identities.subject, users.id, users.status, NOT ${NEEDS_NO_MEMBERSHIP} AS membership_needed, identities.checked_at,
+    EXISTS (SELECT 1 FROM identities AS other WHERE other.user_id = users.id AND other.issuer <> identities.issuer AND other.lapsed = 0
+      AND (other.issuer IN (SELECT value FROM json_each(?3)) OR (other.refresh_token IS NOT NULL AND other.issuer IN (SELECT value FROM json_each(?4))))) AS otherwise_let_in
   FROM identities JOIN users ON users.id = identities.user_id WHERE identities.issuer = ?1 AND identities.subject IN (SELECT value FROM json_each(?2))`;
 
 /**
@@ -845,8 +1123,12 @@ const SCHEDULE_MEMBERSHIP_CATCH_UP = `INSERT INTO membership_catch_ups (issuer, 
 /** Makes the catch-up at issuer ?1 due at ?2, unless one is due already, however much later, while anyone is linked to an account there. */
 const START_MEMBERSHIP_CATCH_UP = `INSERT INTO membership_catch_ups (issuer, due_at) SELECT ?1, ?2 WHERE ${ANYONE_LINKED} ON CONFLICT (issuer) DO NOTHING`;
 
-/** Records that the memberships of the accounts at issuer ?1 with the subjects ?2, a JSON array, were read at ?3, unless they were since. */
-const STAMP_MEMBERSHIPS = `UPDATE identities SET checked_at = ?3 WHERE issuer = ?1 AND subject IN (SELECT value FROM json_each(?2)) AND checked_at < ?3`;
+/**
+ * Records that the memberships of the accounts at issuer ?1 with the subjects ?2, a JSON array, were read
+ * at ?3, lapsed if ?4 is 1, unless they were since. A read at the same moment as one before, as linking an
+ * account records its first, is recorded too.
+ */
+const STAMP_MEMBERSHIPS = `UPDATE identities SET checked_at = ?3, lapsed = ?4 WHERE issuer = ?1 AND subject IN (SELECT value FROM json_each(?2)) AND checked_at <= ?3`;
 
 /** Whom an account elsewhere can be connected to: someone active, neither a guest nor a bot. */
 const CONNECTABLE = `users.status = ${ACTIVE} AND users.guest = 0 AND users.role <> ${BOT}`;
@@ -868,12 +1150,28 @@ const CONNECTING_PERSON = `SELECT NOT ${NEEDS_NO_MEMBERSHIP} AS membership_neede
   FROM users WHERE id = ?1 AND ${CONNECTABLE}`;
 
 /**
- * Links the account at issuer ?1 with subject ?2, its membership read at ?3, named ?7 with the email
- * address ?8, to person ?5 at ?4, if they can have one connected and their password's digest is still
- * ?6, or "" without one, as it was when they started connecting it.
+ * Links the account at issuer ?1 with subject ?2, its membership read at ?3, lapsed ?9, named ?7 with the
+ * email address ?8, which signs in by ?10, to person ?5 at ?4, if they can have one connected and their
+ * password's digest is still ?6, or "" without one, as it was when they started connecting it.
  */
-const CONNECT_IDENTITY = `INSERT INTO identities (issuer, subject, user_id, checked_at, created_at, updated_at, name, email_address)
-  SELECT ?1, ?2, id, ?3, ?4, ?4, ?7, ?8 FROM users WHERE id = ?5 AND ${CONNECTABLE} AND coalesce(password_digest, '') = ?6
+const CONNECT_IDENTITY = `INSERT INTO identities (issuer, subject, user_id, checked_at, created_at, updated_at, name, email_address, lapsed, via)
+  SELECT ?1, ?2, id, ?3, ?4, ?4, ?7, ?8, ?9, ?10 FROM users WHERE id = ?5 AND ${CONNECTABLE} AND coalesce(password_digest, '') = ?6
+  RETURNING user_id`;
+
+/**
+ * Links the account at issuer ?1 with subject ?2, its membership read at ?3, named ?5 with the email
+ * address ?6, at ?4, to whoever here has the address ?7, whatever its case, if only one person does, and
+ * they can have one connected and aren't connected to another account there: what signing in for the
+ * first time does with an address the single sign-on provider verified, while it's set to. Only someone
+ * who proved the address is theirs here too, by joining with a link emailed to it, and hasn't changed it
+ * since, is linked by it, so that nobody can claim a colleague's address ahead of them, and never an
+ * administrator, who connects one from their profile, with their password.
+ */
+const LINK_VERIFIED_EMAIL = `INSERT INTO identities (issuer, subject, user_id, checked_at, created_at, updated_at, name, email_address, via)
+  SELECT ?1, ?2, users.id, ?3, ?4, ?4, ?5, ?6, 'sso' FROM users WHERE lower(users.email_address) = lower(?7) AND ${CONNECTABLE}
+    AND users.email_verified_at IS NOT NULL AND users.role <> ${ADMINISTRATOR}
+    AND (SELECT count(*) FROM users AS same WHERE lower(same.email_address) = lower(?7)) = 1
+    AND NOT EXISTS (SELECT 1 FROM identities WHERE identities.user_id = users.id AND identities.issuer = ?1)
   RETURNING user_id`;
 
 /** Keeps what the account at issuer ?1 with subject ?2 says of itself now, its name ?3 and email address ?4, recording when, ?5, if either has changed. */
@@ -904,6 +1202,43 @@ const UNLINK_ON_NEW_PASSWORD = `DELETE FROM identities WHERE user_id = ?1 AND co
 const DISCONNECTING = `EXISTS (SELECT 1 FROM identities JOIN users ON users.id = identities.user_id
   WHERE identities.user_id = ?1 AND identities.issuer = ?2 AND users.password_digest = ?3 AND coalesce(users.email_address, '') <> '')`;
 
+/**
+ * The sessions a back-channel logout ends, of those signed in with an account at issuer ?1 and started by
+ * ?4: those that came from the provider's session ?2, those of whoever the account with subject ?3 is
+ * linked to, or those that are both, each a query of its own, since SQLite can't use an index through
+ * `? IS NULL OR`. Each names all four, so that each binds the same values.
+ */
+const LOGGED_OUT_BY_SID = `sessions.identity_issuer = ?1 AND sessions.identity_sid = ?2 AND ?3 IS NULL AND sessions.created_at <= ?4`;
+const LOGGED_OUT_BY_SUBJECT = `sessions.identity_issuer = ?1 AND ?2 IS NULL AND sessions.created_at <= ?4
+  AND sessions.user_id IN (SELECT user_id FROM identities WHERE issuer = ?1 AND subject = ?3)`;
+const LOGGED_OUT_BY_BOTH = `sessions.identity_issuer = ?1 AND sessions.identity_sid = ?2 AND sessions.created_at <= ?4
+  AND sessions.user_id IN (SELECT user_id FROM identities WHERE issuer = ?1 AND subject = ?3)`;
+
+/**
+ * The sessions started by ?4 of whoever the account at issuer ?1 with subject ?3 is linked to that it signed
+ * in, as `LOGGED_OUT_BY_SUBJECT`'s, and, should they need a membership, every other one of theirs however
+ * they signed in, as a provider that no longer vouches for the account ends while it's the only way in
+ * (`LoggedOut.everywhere`). Someone who needs none can sign in again with their password.
+ */
+const LOGGED_OUT_EVERYWHERE = `?2 IS NULL AND sessions.created_at <= ?4 AND sessions.user_id IN (SELECT user_id FROM identities WHERE issuer = ?1 AND subject = ?3)
+  AND (sessions.identity_issuer = ?1 OR NOT EXISTS (SELECT 1 FROM users WHERE users.id = sessions.user_id AND ${NEEDS_NO_MEMBERSHIP}))`;
+
+/** Which of those `loggedOut` names. */
+const loggedOutBy = ({ subject, sid, everywhere }: LoggedOut) =>
+  subject === null ? LOGGED_OUT_BY_SID : sid === null ? (everywhere ? LOGGED_OUT_EVERYWHERE : LOGGED_OUT_BY_SUBJECT) : LOGGED_OUT_BY_BOTH;
+
+/** The statements that end the sessions `loggedOut` (one of the four above) names, queuing their sockets' revocations with prefix ?5, code ?6, due at ?7. */
+const loggingOut = (loggedOut: string) => ({
+  queue: `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+    SELECT memberships.room_id, ?5 || sessions.id, ?6, ?7 FROM sessions JOIN memberships ON memberships.user_id = sessions.user_id
+    WHERE ${loggedOut} RETURNING id`,
+  // Someone left with no session anywhere has no browser that should hear their pushes.
+  forgetPushes: `DELETE FROM push_subscriptions WHERE user_id IN (SELECT sessions.user_id FROM sessions WHERE ${loggedOut})
+    AND NOT EXISTS (SELECT 1 FROM sessions AS kept WHERE kept.user_id = push_subscriptions.user_id
+      AND kept.id NOT IN (SELECT sessions.id FROM sessions WHERE ${loggedOut}))`,
+  end: `DELETE FROM sessions WHERE ${loggedOut} RETURNING id, user_id`,
+});
+
 /** Queues revoking the sockets of every session of person ?1 but ?7, in every room they're in, while `DISCONNECTING`, as `QUEUE_OTHER_SESSION_REVOCATIONS` does. */
 const QUEUE_DISCONNECTED_SESSION_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
   SELECT memberships.room_id, ?4 || sessions.id, ?5, ?6 FROM sessions JOIN memberships ON memberships.user_id = sessions.user_id
@@ -915,16 +1250,26 @@ const DISCONNECT_IDENTITY = `DELETE FROM identities WHERE user_id = ?1 AND issue
 
 /**
  * The same, for someone signing in with a sign-in link, unless they're no longer active, or are a guest
- * while ?7 says guests can't stay signed in, or the session ?8 names, which showed the link, has ended,
- * is a guest's while ?7 says that, or is neither theirs nor an active administrator's.
+ * while ?7 says guests can't stay signed in and no stay of a guest of one room still holds them at ?9,
+ * or the session ?8 names, which showed the link, has ended, is a guest's while ?7 says that and no
+ * such stay holds its person either, or is neither theirs nor an active administrator's.
+ * while ?7 says guests can't stay signed in, or the session ?8 names, which showed the link at ?9, has
+ * ended, has ended the links it showed until after then (`EndedByPassword`), is a guest's while ?7 says
+ * that, or is neither theirs nor an active administrator's.
  */
 const INSERT_TRANSFERRED_SESSION = `INSERT INTO sessions (id, user_id, token_digest, ip_address, user_agent, last_active_at, created_at, updated_at)
-  SELECT ?1, id, ?2, ?3, ?4, ?5, ?5, ?5 FROM users WHERE id = ?6 AND status = ${ACTIVE} AND (guest = 0 OR ?7 = 1)
+  SELECT ?1, id, ?2, ?3, ?4, ?5, ?5, ?5 FROM users WHERE id = ?6 AND status = ${ACTIVE}
+    AND (guest = 0 OR ?7 = 1 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at > ?10))
     AND EXISTS (SELECT 1 FROM sessions AS showing JOIN users AS shower ON shower.id = showing.user_id
-      WHERE showing.id = ?8 AND shower.status = ${ACTIVE} AND (shower.guest = 0 OR ?7 = 1)
+      WHERE showing.id = ?8 AND showing.transfers_since <= ?9 AND shower.status = ${ACTIVE}
+        AND (shower.guest = 0 OR ?7 = 1 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = shower.id AND guest_stays.until_at > ?10))
         AND (shower.id = users.id OR shower.role = ${ADMINISTRATOR}))`;
 
-/** The session a token's digest names, if its person is still active. */
+/**
+ * The session a token's digest names, if its person is still active. When they're a guest of one room,
+ * what `session` says of their stay is asked of guest_stays apart, since it can change while a session
+ * is kept.
+ */
 const SESSION = `SELECT sessions.id AS session_id, sessions.last_active_at, users.id AS user_id, users.name,
     users.role = ${ADMINISTRATOR} AS administrator, users.guest
   FROM sessions JOIN users ON users.id = sessions.user_id
@@ -934,11 +1279,15 @@ const SESSION = `SELECT sessions.id AS session_id, sessions.last_active_at, user
 interface DirectoryRow {
   id: UserId;
   name: string;
+  username: string | null;
   bio: string | null;
+  /** The JSON `moodIn` reads, or null while they wear none. */
+  mood: string | null;
   role: number;
   status: number;
   updated_at: string;
   agent: number;
+  agent_access: string | null;
 }
 
 /** The columns that say what avatar someone has uploaded (migrations/0032_avatars.sql). */
@@ -968,21 +1317,68 @@ const avatarChange = (userId: UserId, avatar: StoredPicture | null, previous: st
  */
 const roomsChange = (agentId: UserId, rooms: RoomId[] | null, now: string): Statement[] =>
   rooms === null
-    ? [statement(`UPDATE agents SET every_open_room = 1 WHERE user_id = ?`, agentId), statement(GRANT_OPEN_ROOMS_TO_USER, agentId, now, now)]
+    ? [statement(`UPDATE agents SET every_open_room = 1 WHERE user_id = ?`, agentId), statement(GRANT_OPEN_ROOMS_TO_USER, agentId, now, now, agentId)]
     : [
         statement(`UPDATE agents SET every_open_room = 0 WHERE user_id = ?`, agentId),
         statement(LEAVE_UNPICKED_ROOMS, agentId, JSON.stringify(rooms)),
         statement(GRANT_PICKED_ROOMS, agentId, JSON.stringify(rooms), now),
       ];
 
+/** The mood the JSON `kept` names, as the users table keeps it, or null for none or what can't be one, as nothing Ember writes isn't. */
+function moodIn(kept: string | null): PersonMood | null {
+  if (kept === null) return null;
+  let mood: unknown;
+  try {
+    mood = JSON.parse(kept);
+  } catch {
+    return null;
+  }
+  return typeof mood === "object" && mood !== null && isMood(mood) ? mood : null;
+}
+
+const isMood = (mood: object): mood is PersonMood =>
+  typeof (mood as PersonMood).emoji === "string" &&
+  typeof (mood as PersonMood).text === "string" &&
+  ((mood as PersonMood).clearAt === null || typeof (mood as PersonMood).clearAt === "string");
+/**
+ * What puts chat bot `botId` in every open room, with null, or in just the open rooms `rooms` names,
+ * taking it out of the others, and records which, as `roomsChange` does an agent.
+ */
+const botRoomsChange = (botId: UserId, rooms: RoomId[] | null, now: string): Statement[] =>
+  rooms === null
+    ? [statement(`UPDATE users SET rooms_picked = NULL WHERE id = ?`, botId), statement(GRANT_OPEN_ROOMS_TO_USER, botId, now, now, botId)]
+    : [
+        statement(`UPDATE users SET rooms_picked = 1 WHERE id = ?`, botId),
+        statement(LEAVE_UNPICKED_ROOMS, botId, JSON.stringify(rooms)),
+        statement(GRANT_PICKED_ROOMS, botId, JSON.stringify(rooms), now),
+      ];
+
+/**
+ * What takes agent `agentId` out of every room but its DMs, the private rooms it was put in too, as one
+ * only administrators' direct messages reach is in none, and records that it's in none.
+ */
+const leaveEveryRoom = (agentId: UserId): Statement[] => [
+  statement(`UPDATE agents SET every_open_room = 0 WHERE user_id = ?`, agentId),
+  statement(LEAVE_SHARED_ROOMS, agentId),
+];
+
+/** Whom an agent is kept for, as its user keeps it, `kept`: nobody for null, as for anyone who isn't one, or for what can't be, as nothing Ember writes is. */
+const keptForIn = (kept: string | null): KeptFor | null => (kept === "admins" || kept === "admin-dms" ? kept : null);
+
+/** Whom an agent `access` says who can ask is kept for, as its user keeps it: nobody when everyone can. */
+const keptForOf = (access: AgentAccess): KeptFor | null => (access === "everyone" ? null : access);
+
 const directoryEntry = (row: DirectoryRow): DirectoryEntry => ({
   id: row.id,
   name: row.name,
+  username: row.username,
   bio: row.bio,
+  mood: moodIn(row.mood),
   role: ROLES[row.role] ?? "member",
   status: STATUSES[row.status] ?? "active",
   updatedAt: row.updated_at,
   agent: row.agent === 1,
+  keptFor: keptForIn(row.agent_access),
 });
 
 interface BotRow extends DirectoryRow {
@@ -990,6 +1386,12 @@ interface BotRow extends DirectoryRow {
 }
 
 const storedBot = (row: BotRow, rooms: BotRoom[]): StoredBot => ({ ...directoryEntry(row), token: row.bot_token, rooms });
+
+/** A command as the bots page and the composer's menu list it, as `COMMANDS` and `COMMAND_BY_ID` read it. */
+const commandOf = ({ bot_id, bot_name, ...command }: CommandRow): Command => ({ ...command, bot: { id: bot_id, name: bot_name } });
+
+/** A shortcut as the bots page lists it and a message's More actions offers it, as `SHORTCUTS` and `SHORTCUT_BY_ID` read it. */
+const shortcutOf = ({ bot_id, bot_name, ...shortcut }: ShortcutRow): Shortcut => ({ ...shortcut, bot: { id: bot_id, name: bot_name } });
 
 /** An agent as the AI assistant tab lists it, as `AGENTS` reads it. */
 interface AgentRow extends DirectoryRow {
@@ -1020,6 +1422,7 @@ const storedAgent = (row: AgentRow, rooms: AgentRoom[]): StoredAgent => ({
   model: row.model,
   modelName: row.model_name,
   webTools: webToolsIn(row.web_tools),
+  access: keptForIn(row.agent_access) ?? "everyone",
   rooms: row.every_open_room === 1 ? null : rooms,
 });
 
@@ -1158,15 +1561,72 @@ function memberfulKeysIn(settings: Record<string, unknown> | null): SavedMemberf
 }
 
 /**
+ * The single sign-on provider, which the account's settings keep as `sso`, `{ issuer, client_id,
+ * client_secret, name, scopes, groups_claim, allowed_groups, links_verified_emails }`, the secret sealed,
+ * or null while there's none.
+ */
+function ssoIn(settings: Record<string, unknown> | null): SavedSso | null {
+  const kept = settings?.sso;
+  if (typeof kept !== "object" || kept === null) return null;
+  const { issuer, client_id, client_secret, name, scopes, groups_claim, allowed_groups, links_verified_emails } = kept as Record<string, unknown>;
+  const textOrNull = (value: unknown) => (typeof value === "string" ? value : null);
+  const texts = (value: unknown) => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+  return {
+    issuer: textOrNull(issuer),
+    clientId: textOrNull(client_id),
+    sealedClientSecret: textOrNull(client_secret),
+    name: typeof name === "string" && name !== "" ? name : DEFAULT_SSO_NAME,
+    scopes: texts(scopes),
+    groupsClaim: typeof groups_claim === "string" && groups_claim !== "" ? groups_claim : DEFAULT_GROUPS_CLAIM,
+    allowedGroups: texts(allowed_groups),
+    linksVerifiedEmails: links_verified_emails === true,
+  };
+}
+
+/** The same, as the account's settings keep it. */
+const storedSso = (sso: SavedSso | null) =>
+  sso && {
+    issuer: sso.issuer,
+    client_id: sso.clientId,
+    client_secret: sso.sealedClientSecret,
+    name: sso.name,
+    scopes: sso.scopes,
+    groups_claim: sso.groupsClaim,
+    allowed_groups: sso.allowedGroups,
+    links_verified_emails: sso.linksVerifiedEmails,
+  };
+
+/**
  * The Realtime SFU app huddles run through, which the account's settings keep as `huddles`,
- * `{ app_id, app_secret }`, the secret sealed, or null while huddles are off.
+ * `{ app_id, app_secret }`, the secret sealed, or null while huddles are off. The TURN key their relay
+ * goes by is kept with it, as `relay`, so that turning huddles off forgets both.
  */
 function huddlesIn(settings: Record<string, unknown> | null): SavedHuddles | null {
   const kept = settings?.huddles;
   if (typeof kept !== "object" || kept === null) return null;
-  const { app_id: appId, app_secret: sealedAppSecret } = kept as Record<string, unknown>;
-  return typeof appId === "string" && typeof sealedAppSecret === "string" ? { appId, sealedAppSecret } : null;
+  const { app_id: appId, app_secret: sealedAppSecret, relay } = kept as Record<string, unknown>;
+  return typeof appId === "string" && typeof sealedAppSecret === "string" ? { appId, sealedAppSecret, relay: relayIn(relay) } : null;
 }
+
+/** The TURN key huddles' relay goes by, as `huddles` keeps it, `{ key_id, api_token }`, the token sealed, or null without one. */
+function relayIn(kept: unknown): SavedRelay | null {
+  if (typeof kept !== "object" || kept === null) return null;
+  const { key_id: keyId, api_token: sealedApiToken } = kept as Record<string, unknown>;
+  return typeof keyId === "string" && typeof sealedApiToken === "string" ? { keyId, sealedApiToken } : null;
+}
+
+/** `huddles` as the account's settings keep them. */
+const storedHuddles = ({ appId, sealedAppSecret, relay }: SavedHuddles) => ({
+  app_id: appId,
+  app_secret: sealedAppSecret,
+  ...(relay && { relay: { key_id: relay.keyId, api_token: relay.sealedApiToken } }),
+});
+
+/** Whether the account's settings let cameras go on in huddles, which they keep as `huddle_cameras`: unless that's stored as false, as the Cameras switch stores it. */
+const showsHuddleCameras = (settings: Record<string, unknown> | null) => settings?.huddle_cameras !== false;
+
+/** Whether they let screens be shared in huddles, which they keep as `huddle_screens`: unless that's stored as false, as the Screen sharing switch stores it. */
+const sharesHuddleScreens = (settings: Record<string, unknown> | null) => settings?.huddle_screens !== false;
 
 /**
  * How Ember AI asks AI Gateway, which the account's settings keep as `assistant`, `{ account_id,
@@ -1292,6 +1752,12 @@ function joinsWithMemberfulIn(settings: Record<string, unknown> | null): boolean
   return isPresent(on === undefined ? settings?.memberful_sign_in : on);
 }
 
+/** Whether the single sign-on provider's people join with it, which the account's settings keep as `sso_join`: only while the setting is present. */
+const joinsWithSsoIn = (settings: Record<string, unknown> | null) => isPresent(settings?.sso_join);
+
+/** Whether single sign-on is the only way in, which the account's settings keep as `sso_sign_in`: only while the setting is present, and single sign-on is on. */
+const signsInWithSsoIn = (settings: Record<string, unknown> | null) => isPresent(settings?.sso_sign_in) && joinsWithSsoIn(settings);
+
 /** Whether people may join with an address at the email domains, which the account's settings keep as `email_domain_sign_up`: only while the setting is present. */
 const signsUpWithEmailDomainIn = (settings: Record<string, unknown> | null) => isPresent(settings?.email_domain_sign_up);
 
@@ -1303,6 +1769,12 @@ function emailDomainsIn(settings: Record<string, unknown> | null): string[] {
   const kept = settings?.email_domains;
   if (!Array.isArray(kept)) return [];
   return [...new Set(kept.map((domain: unknown) => (typeof domain === "string" ? emailDomainOf(domain) : null)).filter((domain) => domain !== null))];
+}
+
+/** The words and phrases Blocked words keeps out, which the account's settings keep as `blocked_words`, or none while they keep none. */
+function blockedWordsIn(settings: Record<string, unknown> | null): string[] {
+  const kept = settings?.blocked_words;
+  return Array.isArray(kept) ? kept.filter((word: unknown) => typeof word === "string") : [];
 }
 
 /**
@@ -1320,8 +1792,14 @@ function navigationIconsIn(settings: Record<string, unknown> | null): Navigation
   return icons;
 }
 
-interface RoomToChangeRow extends SharedRoom {
+/** Whether a room's settings allow huddles in it, as `rooms.huddles_allowed` keeps it: 1 until they're turned off there. */
+interface HuddlesAllowedRow {
+  huddles_allowed: number;
+}
+
+interface RoomToChangeRow extends Omit<SharedRoom, "huddles">, HuddlesAllowedRow {
   can_administer: number;
+  can_change_huddles: number;
 }
 
 /** A room's huddle as the room last reported it: when it started, and who's in it, a JSON list of their ids in the order they joined. */
@@ -1330,8 +1808,14 @@ interface HuddleRow {
   huddle_user_ids: string;
 }
 
+/** A room as the statements that read a DM's start read it: who it welcomes, if anyone, and when it started. */
+interface StartRow {
+  newcomer_id: UserId | null;
+  started_at: string;
+}
+
 /** A room someone is in, as `ROOMS_FOR_USER` reads it: a DM's name and icon are null. */
-interface SidebarRow extends HuddleRow {
+interface SidebarRow extends HuddleRow, HuddlesAllowedRow, StartRow {
   id: RoomId;
   kind: SidebarRoom["kind"];
   name: string | null;
@@ -1339,6 +1823,7 @@ interface SidebarRow extends HuddleRow {
   active_at: string;
   unread: number;
   unread_since: string | null;
+  unread_count: number;
   involvement: Involvement;
   shared_position: number | null;
 }
@@ -1348,8 +1833,8 @@ interface DirectMemberRow extends User {
   room_id: RoomId;
 }
 
-/** Someone in a DM, as `DIRECT_WITH_KEY` reads them, with when the DM was last active. */
-interface KeyedDirectMemberRow extends DirectMemberRow {
+/** Someone in a DM, as `DIRECT_WITH_KEY` reads them, with when the DM was last active, and its start. */
+interface KeyedDirectMemberRow extends DirectMemberRow, StartRow {
   active_at: string;
 }
 
@@ -1373,25 +1858,47 @@ function messagePushes(roomId: RoomId, { message }: RoomEvent, rows: PushRow[]):
   ];
 }
 
+/** An invitation's pushes, from the subscriptions `INVITATION_PUSHES` found for it: none when it found none. */
+function invitationPushes(roomId: RoomId, rows: InvitationPushRow[]): InvitationPush[] {
+  if (rows.length === 0) return [];
+  const [{ kind, name, inviter_name }] = rows as [InvitationPushRow];
+  return [{ payload: invitationPayload(roomId, { kind, name }, inviter_name), deliveries: rows.map(deliveryOf), ttl: INVITATION_TTL_SECONDS }];
+}
+
 /** Whether `ROOM_RANKED` found that the shared order ranks the room. */
 const isRanked = (rows: unknown[]) => (rows as Array<{ ranked: number }>)[0]?.ranked === 1;
 
 /** A DM's people, as the app has them, from the rows naming them. */
 const membersOf = (rows: DirectMemberRow[]): User[] => rows.map(({ id, name }) => ({ id, name }));
 
-/** A room someone is in, with the people in it if it's a DM, whom `members` reads. */
-const roomOf = ({ id, kind, name, icon, active_at }: SidebarRow, members: DirectMemberRow[] = []): Room =>
-  kind === "direct" ? { id, kind, members: membersOf(members), activeAt: active_at } : { id, kind, name: name ?? "", icon };
+/** Who a DM welcomes, and since when, when it started as they joined: nothing for any other. */
+const joinedOf = ({ newcomer_id, started_at }: StartRow): Pick<DirectRoom, "joined"> => (newcomer_id === null ? {} : { joined: { userId: newcomer_id, at: started_at } });
 
-/** A room as someone's sidebar lists it, with whether it's marked unread for them, since when, and their level in it. */
+/** What a shared room says of huddles in it: that they're off while its settings don't allow them, and nothing otherwise. */
+export const allowingHuddles = (allowed: boolean): Pick<SharedRoom, "huddles"> => (allowed ? {} : { huddles: false });
+
+const allowsHuddles = ({ huddles_allowed }: HuddlesAllowedRow) => huddles_allowed !== 0;
+
+/** A DM, `id`, last active at `activeAt`, with the people `members` reads, and who it welcomes, if anyone. */
+const directOf = (id: RoomId, activeAt: string, members: DirectMemberRow[], start: StartRow): DirectRoom => ({ id, kind: "direct", members: membersOf(members), activeAt, ...joinedOf(start) });
+
+/** A room someone is in, with the people in it if it's a DM, whom `members` reads. */
+const roomOf = (row: SidebarRow, members: DirectMemberRow[] = []): Room =>
+  row.kind === "direct" ? directOf(row.id, row.active_at, members, row) : { id: row.id, kind: row.kind, name: row.name ?? "", icon: row.icon, ...allowingHuddles(allowsHuddles(row)) };
+
+/**
+ * A room as someone's sidebar lists it, with whether it's marked unread for them, since when, and in a
+ * DM how many messages have come since, at least the one that marked it, and their level in it.
+ */
 const sidebarRoom = (row: SidebarRow, members?: DirectMemberRow[]): SidebarRoom => ({
   ...roomOf(row, members),
   unread: row.unread === 1,
   ...(row.unread_since !== null && { unreadSince: row.unread_since }),
+  ...(row.unread === 1 && row.kind === "direct" && { unreadCount: Math.max(row.unread_count, 1) }),
   involvement: row.involvement,
 });
 
-const roomToChange = (row: RoomToChangeRow) => ({ room: { id: row.id, kind: row.kind, name: row.name, icon: row.icon }, canAdminister: row.can_administer === 1 });
+const roomToChange = (row: RoomToChangeRow) => ({ room: { id: row.id, kind: row.kind, name: row.name, icon: row.icon, ...allowingHuddles(allowsHuddles(row)) }, canAdminister: row.can_administer === 1, canChangeHuddles: row.can_change_huddles === 1 });
 
 const storedSession = (row: SessionRow): StoredSession => ({
   id: row.session_id,
@@ -1404,6 +1911,36 @@ const storedSession = (row: SessionRow): StoredSession => ({
 /** When a room was last active: when its latest message came, or when it was made, until one has. */
 const ACTIVE_AT = `coalesce(rooms.last_message_at, rooms.created_at) AS active_at`;
 
+/** Who a room welcomes, for a DM started as they joined, and when it was made (`StartRow`). */
+const START = `rooms.newcomer_id, rooms.created_at AS started_at`;
+
+/** Someone here, and the DM, `roomId`, that is to welcome a newcomer to them. */
+export interface Welcome {
+  roomId: RoomId;
+  user: User;
+}
+
+/** The statements that start the DMs `welcomes` lists for newcomer `newcomerId`, as of `now`, the first answering the ones it starts. */
+function welcoming(newcomerId: UserId, welcomes: Welcome[], now: string): Statement[] {
+  const listed = JSON.stringify(welcomes.map(({ roomId, user }) => ({ id: roomId, key: directKey([newcomerId, user.id]), userId: user.id })));
+  return [statement(START_WELCOMES, listed, newcomerId, now), statement(GRANT_WELCOMES, listed, now)];
+}
+
+/** The DMs of `welcomes` that `started` names, as `welcoming` started them for `newcomer`, as of `now`. */
+function welcomedBy({ id, name }: User, welcomes: Welcome[], started: Array<{ id: RoomId }>, now: string): DirectRoom[] {
+  const ids = new Set(started.map((row) => row.id));
+  return welcomes
+    .filter((welcome) => ids.has(welcome.roomId))
+    .map(({ roomId, user }) => ({
+      id: roomId,
+      kind: "direct",
+      // By id, as a DM's people always come.
+      members: [{ id, name }, user].sort((a, b) => (a.id < b.id ? -1 : 1)),
+      activeAt: now,
+      joined: { userId: id, at: now },
+    }));
+}
+
 /**
  * The rooms someone is in, hidden ones too, with whether each is marked unread for them, their level in
  * it and when it was last active, which orders DMs, and each room's place in the shared order. They come
@@ -1413,8 +1950,9 @@ const ACTIVE_AT = `coalesce(rooms.last_message_at, rooms.created_at) AS active_a
  * joins is put in every open room, go in the order they were made, and rooms from before the Workspace
  * kept a list (`LEGACY_ROOMS`), whose ids don't sort by time, by when they were listed.
  */
-export const ROOMS_FOR_USER = `SELECT rooms.id, rooms.kind, rooms.name, rooms.icon, ${ACTIVE_AT}, memberships.unread_at IS NOT NULL AS unread,
-    memberships.unread_at AS unread_since, memberships.involvement, rooms.shared_position, rooms.huddle_started_at, rooms.huddle_user_ids
+export const ROOMS_FOR_USER = `SELECT rooms.id, rooms.kind, rooms.name, rooms.icon, ${ACTIVE_AT}, ${START}, memberships.unread_at IS NOT NULL AS unread,
+    memberships.unread_at AS unread_since, memberships.unread_count, memberships.involvement, rooms.shared_position, rooms.huddle_started_at,
+    rooms.huddle_user_ids, rooms.huddles_allowed
   FROM memberships JOIN rooms ON rooms.id = memberships.room_id
   WHERE memberships.user_id = ? ORDER BY memberships.created_at, rooms.created_at, rooms.id`;
 
@@ -1492,8 +2030,86 @@ const KEEP_REPORT_TIME = `UPDATE rooms SET huddle_reported_at = ?2 WHERE id = ?1
 /** When the report kept of a room's huddle was made. */
 const HUDDLE_REPORTED_AT = `SELECT huddle_reported_at FROM rooms WHERE id = ?`;
 
+/**
+ * Whether the list of the huddles that are over has a huddle, by what its room says of its message: one
+ * that's over, which someone else joined or whose thread has a reply. Slack's lists none that nobody
+ * else joined, of which it keeps no message.
+ */
+const isListed = ({ over, replies }: HuddleChange): boolean => over !== null && (over.userIds.length > 1 || replies > 0);
+
+/**
+ * Lists the huddles of room ?1 that a JSON array ?2 has, each `{ messageId, startedAt, endedAt, userIds,
+ * replies }`, while the room is there, and has what's listed of each say what it says. Answers those it
+ * listed or changed: none of one listed just so already, nor of a message listed for another room.
+ */
+const LIST_HUDDLES = `INSERT INTO past_huddles (message_id, room_id, started_at, ended_at, user_ids, replies)
+  SELECT json_extract(value, '$.messageId'), ?1, json_extract(value, '$.startedAt'), json_extract(value, '$.endedAt'), json_extract(value, '$.userIds'), json_extract(value, '$.replies')
+    FROM json_each(?2) WHERE EXISTS (SELECT 1 FROM rooms WHERE id = ?1)
+  ON CONFLICT (message_id) DO UPDATE SET started_at = excluded.started_at, ended_at = excluded.ended_at, user_ids = excluded.user_ids, replies = excluded.replies
+    WHERE past_huddles.room_id = excluded.room_id
+      AND (past_huddles.started_at <> excluded.started_at OR past_huddles.ended_at <> excluded.ended_at OR past_huddles.user_ids <> excluded.user_ids OR past_huddles.replies <> excluded.replies)
+  RETURNING message_id`;
+
+/** Takes the huddles of room ?1 whose messages a JSON array ?2 names off the list, and answers those that were on it. */
+const UNLIST_HUDDLES = `DELETE FROM past_huddles WHERE room_id = ?1 AND message_id IN (SELECT value FROM json_each(?2)) RETURNING message_id`;
+
+/**
+ * The huddles that are over in the rooms user ?1 is in and hasn't hidden from their sidebar, the latest
+ * to have started first, up to ?2 of them. A hidden room's are left out here, before the latest are
+ * taken, or they'd crowd the other rooms' off a page that shows none of them. Only each room's latest
+ * ?2 are read, from the index's end, so a room's older huddles cost nothing, however many it has had.
+ */
+const PAST_HUDDLES_FOR_USER = `SELECT past_huddles.room_id AS roomId, past_huddles.message_id AS messageId, past_huddles.started_at AS startedAt, past_huddles.ended_at AS endedAt,
+    past_huddles.user_ids AS userIds, past_huddles.replies
+  FROM memberships CROSS JOIN past_huddles
+  WHERE memberships.user_id = ?1 AND memberships.involvement <> 'invisible' AND past_huddles.room_id = memberships.room_id
+    AND past_huddles.message_id >= coalesce((
+      SELECT oldest.message_id FROM past_huddles AS oldest WHERE oldest.room_id = memberships.room_id ORDER BY oldest.message_id DESC LIMIT 1 OFFSET ?2 - 1
+    ), '')
+  ORDER BY past_huddles.message_id DESC LIMIT ?2`;
+
+/** A huddle that's over as its row lists it, with everyone who was in it as a JSON array of their ids. */
+interface PastHuddleRow extends Omit<PastHuddle, "userIds"> {
+  userIds: string;
+}
+
+/**
+ * Whether whoever has the membership `memberships` reads has blocked `blocked`, a parameter, so that
+ * nothing of theirs reaches them: no unread mark, push or huddle invitation.
+ */
+const blockedBy = (blocked: string) => `EXISTS (SELECT 1 FROM blocks WHERE blocks.user_id = memberships.user_id AND blocks.blocked_id = ${blocked})`;
+
+/**
+ * Who of the people a JSON list ?2 names an invitation into room ?1's huddle by ?3 reaches: those in the
+ * room, active, who hear its @mentions of them or more, since an invitation names them as a mention does,
+ * and haven't blocked ?3.
+ */
+export const HUDDLE_INVITEES = `SELECT memberships.user_id FROM memberships JOIN users ON users.id = memberships.user_id
+  WHERE memberships.room_id = ?1 AND memberships.user_id IN (SELECT value FROM json_each(?2))
+    AND memberships.involvement IN ('everything', 'mentions') AND users.status = ${ACTIVE} AND NOT ${blockedBy("?3")}`;
+
+/**
+ * Where an invitation into room ?1's huddle by ?2 is pushed: to the subscriptions of those of the
+ * people a JSON list ?3 names whom it reaches, as `HUDDLE_INVITEES` has it, in the order they were
+ * saved. Guests are left out unless ?4 says they can stay signed in. Each comes with the room, the name
+ * of whoever invites and the count its push sets the badge to, as a message's does.
+ */
+export const INVITATION_PUSHES = `SELECT push_subscriptions.id, push_subscriptions.endpoint, push_subscriptions.p256dh_key, push_subscriptions.auth_key,
+    (SELECT count(*) FROM memberships AS marked WHERE marked.user_id = memberships.user_id AND marked.unread_at IS NOT NULL) AS badge,
+    rooms.kind, rooms.name, (SELECT name FROM users AS inviters WHERE inviters.id = ?2) AS inviter_name
+  FROM rooms
+    JOIN memberships ON memberships.room_id = rooms.id
+    JOIN users ON users.id = memberships.user_id
+    JOIN push_subscriptions ON push_subscriptions.user_id = memberships.user_id
+  WHERE rooms.id = ?1 AND memberships.user_id IN (SELECT value FROM json_each(?3))
+    AND memberships.involvement IN ('everything', 'mentions') AND users.status = ${ACTIVE} AND (users.guest = 0 OR ?4 = 1) AND NOT ${blockedBy("?2")}
+  ORDER BY push_subscriptions.id`;
+
 /** A room's huddle, as its row keeps it. */
 const HUDDLE = `SELECT huddle_started_at, huddle_user_ids FROM rooms WHERE id = ?`;
+
+/** Whether a room's settings allow huddles in it. */
+const HUDDLES_ALLOWED = `SELECT huddles_allowed FROM rooms WHERE id = ?`;
 
 /**
  * A DM's key: its people's ids, each once, sorted, as a JSON array, so each group of people has one key
@@ -1503,38 +2119,62 @@ const directKey = (memberIds: UserId[]) => JSON.stringify([...new Set(memberIds)
 
 /**
  * Adds a DM, ?1, made by ?2 for the people ?3 is the key of, as of ?4, unless those people have one
- * already, answering it if it added it.
+ * already, or one of them has blocked ?2, answering it if it added it.
  */
-const INSERT_DIRECT = `INSERT INTO rooms (id, kind, creator_id, direct_key, created_at, updated_at) VALUES (?1, 'direct', ?2, ?3, ?4, ?4)
+const INSERT_DIRECT = `INSERT INTO rooms (id, kind, creator_id, direct_key, created_at, updated_at)
+  SELECT ?1, 'direct', ?2, ?3, ?4, ?4 WHERE NOT EXISTS (SELECT 1 FROM blocks WHERE blocked_id = ?2 AND user_id IN (SELECT value FROM json_each(?3)))
   ON CONFLICT (direct_key) DO NOTHING RETURNING id`;
 
 /**
  * Puts the people key ?3 names in DM ?1, as of ?2, if `INSERT_DIRECT` added it, at Campfire's
- * `default_involvement` for a DM, everything.
+ * `default_involvement` for a DM, everything. The guests of one room stay out, whom nobody else's DM
+ * takes out of the room their stay keeps them to.
  */
 const GRANT_DIRECT = `INSERT INTO memberships (room_id, user_id, involvement, created_at, updated_at)
   SELECT ?1, users.id, 'everything', ?2, ?2 FROM users
   WHERE users.id IN (SELECT value FROM json_each(?3)) AND EXISTS (SELECT 1 FROM rooms WHERE id = ?1)
+    AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)
   ON CONFLICT DO NOTHING`;
 
-/** The DM a key names, when it was last active, and who's in it, by id. */
-const DIRECT_WITH_KEY = `SELECT rooms.id AS room_id, ${ACTIVE_AT}, users.id, users.name
-  FROM rooms JOIN memberships ON memberships.room_id = rooms.id JOIN users ON users.id = memberships.user_id
-  WHERE rooms.direct_key = ? ORDER BY memberships.user_id`;
+/** Everyone a new member's DMs welcome them to, as they join: everyone active but bots and guests. */
+const WELCOMERS = `SELECT id, name FROM users WHERE status = ${ACTIVE} AND role <> ${BOT} AND guest = 0 ORDER BY id`;
 
 /**
  * The people the sidebar suggests ?1 start a DM with, before it leaves out as many as their DMs take:
  * the active people with the oldest accounts who share no DM with them, never them. Unlike Campfire's,
  * it suggests no bots, nor @ember and the agents, whose rows among the DMs would look like DMs nobody
- * started. The people in their DMs come from a subquery, and the index on users' age lets it stop at
- * the last one it needs rather than sorting everyone.
+ * started, nor the guests of one room, whom a DM can't take. The people in their DMs come from a
+ * subquery, and the index on users' age lets it stop at the last one it needs rather than sorting
+ * everyone.
  */
 export const SUGGESTED_FOR_USER = `SELECT id, name FROM users
   WHERE status = ${ACTIVE} AND role <> ${BOT} AND id <> ?1 AND id NOT IN (
     SELECT members.user_id FROM memberships AS mine JOIN rooms ON rooms.id = mine.room_id
       JOIN memberships AS members ON members.room_id = mine.room_id
     WHERE mine.user_id = ?1 AND rooms.kind = 'direct')
+    AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)
   ORDER BY created_at, id LIMIT ${SUGGESTED_PEOPLE - 1}`;
+
+/**
+ * Starts the DMs ?1 lists, each `{ id, key, userId }` for one between newcomer ?2 and someone here
+ * who's still active, as of ?3, welcoming ?2, unless those two have one already, answering the ones it
+ * starts.
+ */
+const START_WELCOMES = `INSERT INTO rooms (id, kind, creator_id, direct_key, newcomer_id, created_at, updated_at)
+  SELECT json_extract(value, '$.id'), 'direct', ?2, json_extract(value, '$.key'), ?2, ?3, ?3 FROM json_each(?1)
+  WHERE EXISTS (SELECT 1 FROM users WHERE id = json_extract(value, '$.userId') AND status = ${ACTIVE})
+  ON CONFLICT (direct_key) DO NOTHING RETURNING id`;
+
+/** Puts both people in each DM ?1 lists that `START_WELCOMES` started, as of ?2, at everything, as `GRANT_DIRECT` does. */
+const GRANT_WELCOMES = `INSERT INTO memberships (room_id, user_id, involvement, created_at, updated_at)
+  SELECT rooms.id, people.value, 'everything', ?2, ?2
+  FROM json_each(?1) AS welcomes JOIN rooms ON rooms.id = json_extract(welcomes.value, '$.id') JOIN json_each(rooms.direct_key) AS people
+  WHERE true ON CONFLICT DO NOTHING`;
+
+/** The DM a key names, when it was last active, who it welcomes, and who's in it, by id. */
+const DIRECT_WITH_KEY = `SELECT rooms.id AS room_id, ${ACTIVE_AT}, ${START}, users.id, users.name
+  FROM rooms JOIN memberships ON memberships.room_id = rooms.id JOIN users ON users.id = memberships.user_id
+  WHERE rooms.direct_key = ? ORDER BY memberships.user_id`;
 
 /**
  * Queues revoking a session's sockets in every room its person is in, the only rooms it can have
@@ -1563,6 +2203,14 @@ export const QUEUE_MEMBER_REVOCATIONS = `INSERT INTO pending_revocations (room_i
   RETURNING id`;
 
 /**
+ * Queues turning away, in a room that's open to everyone as it's made private, what the AI apps that
+ * reach only open rooms were let send there (`OPEN_ROOMS_ONLY`), answering a row if it was open.
+ */
+const QUEUE_OPEN_ROOMS_ONLY_REVOCATION = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+  SELECT id, ?, ?, ? FROM rooms WHERE id = ? AND kind = 'open'
+  RETURNING id`;
+
+/**
  * Queues revoking the sockets of each of someone's sessions in every room they're in, answering a row
  * for each session in each room. Session tags, rather than their person tag, so a delivery tried again
  * after they've signed in afresh leaves the new session's sockets open.
@@ -1570,6 +2218,15 @@ export const QUEUE_MEMBER_REVOCATIONS = `INSERT INTO pending_revocations (room_i
 const QUEUE_PERSON_SESSION_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
   SELECT memberships.room_id, ? || sessions.id, ?, ? FROM sessions JOIN memberships ON memberships.user_id = sessions.user_id
   WHERE sessions.user_id = ? RETURNING id`;
+
+/**
+ * Queues revoking someone's sockets in every room they're in by their person tag, answering a row for
+ * each room, which also turns away what the Workspace let through as them before, such as an AI app's
+ * message on its way. Only for an account that's gone for good: a delivery tried again after its person
+ * signed in afresh would close the new session's sockets too.
+ */
+const QUEUE_PERSON_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+  SELECT room_id, user_id, ?, ? FROM memberships WHERE user_id = ? RETURNING id`;
 
 /** The same, for every session of theirs but the one the last value names, which stays signed in. */
 const QUEUE_OTHER_SESSION_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
@@ -1600,17 +2257,33 @@ const QUEUE_PURGES = `INSERT INTO pending_purges (room_id, user_id, due_at)
   SELECT id, ?1, ?2 FROM rooms WHERE kind <> 'direct' OR id IN (SELECT room_id FROM memberships WHERE user_id = ?1) RETURNING id`;
 
 /**
- * Queues having every room close the sockets from each address in a JSON list, telling them to connect
- * again, answering a row for each room and address: banning an address, or lifting the ban, changes
- * what they may do, which the Workspace checks as they connect.
+ * Records that a session's sockets come from an IP address, unless the session has ended since it was
+ * checked, so that banning the address, or lifting the ban, finds the rooms that can hold them.
  */
-const QUEUE_ADDRESS_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
-  SELECT rooms.id, ?1 || addresses.value, ?2, ?3 FROM rooms, json_each(?4) AS addresses RETURNING id`;
+const RECORD_SESSION_ADDRESS = `INSERT INTO session_addresses (session_id, ip_address) SELECT id, ?2 FROM sessions WHERE id = ?1
+  ON CONFLICT DO NOTHING`;
 
-/** The same for the addresses someone's ban blocks, which lifting it unblocks. */
-const QUEUE_UNBANNED_ADDRESS_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
-  SELECT rooms.id, ?1 || addresses.ip_address, ?2, ?3 FROM rooms, (SELECT DISTINCT ip_address FROM bans WHERE user_id = ?4) AS addresses
-  RETURNING id`;
+/**
+ * Each room that can hold a socket from an address, with the tag on the sockets from it, once each, of
+ * the addresses `addresses` names: a room lets in only its members, so the rooms of the people whose
+ * sessions came from it (`RECORD_SESSION_ADDRESS`).
+ */
+const roomsReachedFrom = (addresses: string) => `SELECT DISTINCT memberships.room_id, ?1 || session_addresses.ip_address, ?2, ?3
+  FROM session_addresses JOIN sessions ON sessions.id = session_addresses.session_id JOIN memberships ON memberships.user_id = sessions.user_id
+  WHERE session_addresses.ip_address IN (${addresses})`;
+
+/**
+ * Queues having the rooms that can hold a socket from an address in the JSON list ?4 close those
+ * sockets, telling them to connect again, answering a row for each room and address: banning an
+ * address changes what they may do, which the Workspace checks as they connect. Those of the person
+ * ?5, whose ban it is, are left out, since their sessions' sockets close for good.
+ */
+export const QUEUE_ADDRESS_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+  ${roomsReachedFrom("SELECT value FROM json_each(?4)")} AND sessions.user_id <> ?5 RETURNING id`;
+
+/** The same for the addresses the ban on the person ?4 blocks, which lifting it unblocks. */
+export const QUEUE_UNBANNED_ADDRESS_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+  ${roomsReachedFrom("SELECT ip_address FROM bans WHERE user_id = ?4")} RETURNING id`;
 
 /**
  * The purges a room can take: none while it has sockets left to close, which may be the banned person's,
@@ -1619,9 +2292,13 @@ const QUEUE_UNBANNED_ADDRESS_REVOCATIONS = `INSERT INTO pending_revocations (roo
  */
 const PURGEABLE = `room_id NOT IN (SELECT room_id FROM pending_revocations)`;
 
-/** Purges due by a time that their rooms can take, those due longest first, up to a number of them. */
-export const DUE_PURGES = `SELECT id, room_id AS roomId, user_id AS userId, lifted_at AS liftedAt FROM pending_purges
-  WHERE due_at <= ? AND ${PURGEABLE} ORDER BY due_at, id LIMIT ?`;
+/**
+ * Purges due by a time that their rooms can take, those due longest first, up to a number of them, each
+ * with whether its person deleted their account, which their row says.
+ */
+export const DUE_PURGES = `SELECT id, room_id AS roomId, user_id AS userId, lifted_at AS liftedAt,
+    EXISTS (SELECT 1 FROM users WHERE users.id = pending_purges.user_id AND users.deleted_at IS NOT NULL) AS deletedAccount
+  FROM pending_purges WHERE due_at <= ? AND ${PURGEABLE} ORDER BY due_at, id LIMIT ?`;
 
 /** When the next purge a room can take is due. One waiting on its room's revocations is due once they've gone. */
 export const NEXT_PURGE_DUE = `SELECT due_at FROM pending_purges WHERE ${PURGEABLE} ORDER BY due_at LIMIT 1`;
@@ -1654,20 +2331,35 @@ export const ROOM_ACCESS = `SELECT EXISTS (SELECT 1 FROM memberships WHERE room_
   EXISTS (SELECT 1 FROM bans WHERE ip_address = ?) AS banned`;
 
 /**
- * Marks a room unread, as of a message, for its members who aren't marked already, haven't hidden it,
- * didn't write the message and aren't among the people a JSON list names, who are viewing it, answering
- * a row for each. It writes only the rows it changes. Nothing changes once the Workspace has applied the
- * message's event, so one delivered again is applied once.
+/**
+ * Marks a room unread, as of a message, for its members who haven't hidden it, didn't write the message,
+ * haven't blocked whoever did and aren't among the people a JSON list names, who are viewing it, answering
+ * a row for each, with when the first message they haven't seen came and, in a DM, how many have come
+ * since. In a room it writes only the rows of those not marked already, which a message in a DM writes
+ * too, to count it. Nothing changes once the Workspace has applied the message's event, so one delivered
+ * again is applied once.
  */
-export const MARK_UNREAD = `UPDATE memberships SET unread_at = ?1
-  WHERE room_id = ?2 AND unread_at IS NULL AND involvement <> 'invisible' AND user_id <> ?3
-    AND user_id NOT IN (SELECT value FROM json_each(?4)) AND ?5 > (SELECT applied_seq FROM rooms WHERE id = ?2)
-  RETURNING user_id`;
+export const MARK_UNREAD = `UPDATE memberships SET unread_at = coalesce(unread_at, ?1), unread_count = unread_count + 1
+  WHERE room_id = ?2 AND involvement <> 'invisible' AND user_id <> ?3
+    AND (unread_at IS NULL OR EXISTS (SELECT 1 FROM rooms WHERE id = ?2 AND kind = 'direct'))
+    AND user_id NOT IN (SELECT value FROM json_each(?4)) AND ?5 > (SELECT applied_seq FROM rooms WHERE id = ?2) AND NOT ${blockedBy("?3")}
+  RETURNING user_id, unread_at, unread_count`;
 
-/** Clears someone's unread mark on a room, answering a row if there was one, once for each event. */
-export const MARK_READ = `UPDATE memberships SET unread_at = NULL
+/** A membership whose mark `MARK_UNREAD` or `MARK_READ` changed, as it is now. */
+interface MarkRow {
+  user_id: UserId;
+  unread_at: string | null;
+  unread_count: number;
+}
+
+/** The mark `row` leaves, with its count where messages are `counted`, or null for none. */
+const markOf = (row: MarkRow, counted: boolean): Mark | null =>
+  row.unread_at === null ? null : { at: row.unread_at, ...(counted && { count: Math.max(row.unread_count, 1) }) };
+
+/** Clears someone's unread mark on a room, and its count, answering a row if there was one, once for each event. */
+export const MARK_READ = `UPDATE memberships SET unread_at = NULL, unread_count = 0
   WHERE room_id = ?1 AND user_id = ?2 AND unread_at IS NOT NULL AND ?3 > (SELECT applied_seq FROM rooms WHERE id = ?1)
-  RETURNING user_id`;
+  RETURNING user_id, unread_at, unread_count`;
 
 /**
  * Everyone in DM ?1, to tell of a message in it, numbered ?2, that the Workspace hasn't applied yet,
@@ -1678,13 +2370,17 @@ const TOLD_OF_DIRECT_MESSAGE = `SELECT user_id FROM memberships
 
 /**
  * Where a new message, numbered ?5, by ?2 in room ?1 is pushed: to the subscriptions of the room's
- * active members other than its author and the people a JSON list ?3 names, who are viewing it, or its
- * thread for a reply sent only there, at all messages, when it's in the room's timeline, as ?7 says, then
+ * active members other than its author, those who have blocked its author and the people a JSON list ?3
+ * names, who are viewing it, or its thread for a reply sent only there, at all messages, when it's in the
+ * room's timeline, as ?7 says, then
  * of those at @mentions or all messages whom it mentions, a JSON list ?4, or who follow the thread it's a
- * reply in, a JSON list ?8, each in the order they were saved. Guests are left out unless ?6 says they
- * can stay signed in. Each comes with the room, its author's name and the count its push sets the badge
- * to: how many of its owner's conversations are marked unread. Nothing once the Workspace has applied the
- * message's event.
+ * reply in, a JSON list ?8, each in the order they were saved, but none of whoever has hushed their push
+ * notifications (Do not disturb) while a row in `dnd` covers the moment, ?9 being it and the instant the
+ * guests' stays are read against: guests of one room, whom guest_stays keeps, are pushed whatever ?6
+ * says while their stay hasn't ended, and the open sign-in's guests, without a stay, only while ?6 says
+ * they can stay signed in. Each comes with the room, its author's name and the count its push sets the
+ * badge to: how many of its owner's conversations are marked unread. Nothing once the Workspace has
+ * applied the message's event.
  */
 export const MESSAGE_PUSHES = `SELECT push_subscriptions.id, push_subscriptions.endpoint, push_subscriptions.p256dh_key, push_subscriptions.auth_key,
     (SELECT count(*) FROM memberships AS marked WHERE marked.user_id = memberships.user_id AND marked.unread_at IS NOT NULL) AS badge,
@@ -1693,21 +2389,44 @@ export const MESSAGE_PUSHES = `SELECT push_subscriptions.id, push_subscriptions.
     JOIN memberships ON memberships.room_id = rooms.id
     JOIN users ON users.id = memberships.user_id
     JOIN push_subscriptions ON push_subscriptions.user_id = memberships.user_id
-  WHERE rooms.id = ?1 AND ?5 > rooms.applied_seq AND memberships.user_id <> ?2 AND users.status = ${ACTIVE} AND (users.guest = 0 OR ?6 = 1)
-    AND memberships.user_id NOT IN (SELECT value FROM json_each(?3))
+  WHERE rooms.id = ?1 AND ?5 > rooms.applied_seq AND memberships.user_id <> ?2 AND users.status = ${ACTIVE}
+    AND (users.guest = 0 OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at > ?9)
+      OR (?6 = 1 AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)))
+    AND memberships.user_id NOT IN (SELECT value FROM json_each(?3)) AND NOT ${blockedBy("?2")}
+    AND NOT EXISTS (SELECT 1 FROM dnd WHERE dnd.user_id = memberships.user_id AND dnd.until_at > ?9)
     AND ((memberships.involvement = 'everything' AND ?7 = 1) OR (memberships.involvement IN ('everything', 'mentions')
       AND (memberships.user_id IN (SELECT value FROM json_each(?4)) OR memberships.user_id IN (SELECT value FROM json_each(?8)))))
   ORDER BY memberships.involvement = 'mentions', push_subscriptions.id`;
 
 /**
- * Whether push subscription ?1 is still saved, for someone active. Its id is never another's, as
- * AUTOINCREMENT numbers them.
+ * Whether push subscription ?1 may still have a push at the moment ?2 is: still saved, for someone
+ * active who hasn't hushed their push notifications (Do not disturb), and, should they be a guest of
+ * one room, while their stay hasn't ended yet, so a push holding the message's text waits for nobody
+ * whose reads refuse. Its id is never another's, as AUTOINCREMENT numbers them.
  */
 const PUSHABLE = `SELECT 1 FROM push_subscriptions JOIN users ON users.id = push_subscriptions.user_id
-  WHERE push_subscriptions.id = ?1 AND users.status = ${ACTIVE}`;
+  WHERE push_subscriptions.id = ?1 AND users.status = ${ACTIVE}
+    AND NOT EXISTS (SELECT 1 FROM dnd WHERE dnd.user_id = push_subscriptions.user_id AND dnd.until_at > ?2)
+    AND (users.guest = 0 OR NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at <= ?2))`;
+
+/**
+ * When someone has hushed their push notifications (Do not disturb) until, in milliseconds since the
+ * epoch, or null while they haven't, or their hush has passed: a stale row is simply none.
+ */
+const DND_UNTIL = `SELECT until_at FROM dnd WHERE user_id = ?1 AND until_at > ?2`;
+
+/**
+ * Hushes someone's push notifications (Do not disturb) until `untilAt`, in milliseconds since the epoch.
+ * A hush they had is overwritten all the same, so it's stale rather than wrong.
+ */
+const SET_DND = `INSERT INTO dnd (user_id, until_at) VALUES (?1, ?2)
+  ON CONFLICT (user_id) DO UPDATE SET until_at = excluded.until_at RETURNING until_at`;
+
+/** Lifts the hush on someone's push notifications, taking their row away. */
+const CLEAR_DND = `DELETE FROM dnd WHERE user_id = ?`;
 
 /** A subscription a push goes to, and the count it sets the badge to. */
-interface DeliveryRow {
+export interface DeliveryRow {
   id: number;
   endpoint: string;
   p256dh_key: string;
@@ -1721,6 +2440,12 @@ interface PushRow extends DeliveryRow {
   author_name: string;
 }
 
+interface InvitationPushRow extends DeliveryRow {
+  kind: RoomKind;
+  name: string | null;
+  inviter_name: string;
+}
+
 /**
  * Someone's push subscription ?1, to send a test push to, with the count it sets the badge to, as
  * `MESSAGE_PUSHES` counts it, and nothing when it's someone else's, ?2 being whose it should be.
@@ -1729,7 +2454,7 @@ const TEST_PUSH = `SELECT id, endpoint, p256dh_key, auth_key,
     (SELECT count(*) FROM memberships AS marked WHERE marked.user_id = push_subscriptions.user_id AND marked.unread_at IS NOT NULL) AS badge
   FROM push_subscriptions WHERE id = ?1 AND user_id = ?2`;
 
-const deliveryOf = (row: DeliveryRow): PushDelivery => ({
+export const deliveryOf = (row: DeliveryRow): PushDelivery => ({
   subscriptionId: row.id,
   endpoint: row.endpoint,
   p256dhKey: row.p256dh_key,
@@ -1737,38 +2462,93 @@ const deliveryOf = (row: DeliveryRow): PushDelivery => ({
   badge: row.badge,
 });
 
+/** Whether `id`, a parameter, is an active administrator's, as a statement asks of whoever it reads `users` for. */
+const administratorIs = (id: string) => `EXISTS (SELECT 1 FROM users AS askers WHERE askers.id = ${id} AND askers.role = ${ADMINISTRATOR} AND askers.status = ${ACTIVE})`;
+
 /**
+ * Whether the user `users` reads is listed to `asker`, a parameter: anyone but an AI agent only
+ * administrators' direct messages reach, deleted or not, which only an administrator is told of.
+ */
+const listedTo = (asker: string) => `(users.agent_access IS NOT 'admin-dms' OR ${administratorIs(asker)})`;
+
+/**
+ * Whether `asker`, a parameter, can ask the user `users` reads: anyone can, unless it's an AI agent kept
+ * for administrators, which only an administrator mentions or writes to.
+ */
+const askedBy = (asker: string) => `(users.agent_access IS NULL OR ${administratorIs(asker)})`;
+
+/**
+ * Whether the bot `users` reads answers `asker` in room `room`, both parameters: any does, unless it's an
+ * AI agent kept for administrators, which answers only an administrator, and one only their direct
+ * messages reach only where everyone else in the room is an administrator, so that nobody else reads
+ * what it says: no member, and nobody with the key of a bot there, which reads the room and is sent it.
+ */
+const answersTo = (asker: string, room: string) => `(users.agent_access IS NULL OR (${administratorIs(asker)}
+    AND (users.agent_access <> 'admin-dms' OR NOT EXISTS (SELECT 1 FROM memberships AS others JOIN users AS people ON people.id = others.user_id
+      WHERE others.room_id = ${room} AND others.user_id <> users.id AND people.role <> ${ADMINISTRATOR}))))`;
+
+/**
+ * Where a new message, numbered ?4, by ?2 in room ?1 goes: the active bots in it whom the message
+ * mentions, a JSON list ?3, and any the bot_subscriptions table puts on the room's message events;
+ * never its author. In a DM they're all of them, mention or no. They're the bots with webhooks, which
+ * it's delivered to, and @ember and the agents, which answer it (`answers` 1) unless a bot wrote it,
+ * @ember or an agent among them, so that bots can't keep each other talking. `subscribed` says whether
+ * the delivery is one of a message event, which a bot watching the room's messages is sent mention or
+ * no; one both mentioned and watching is delivered to once, as the event. Each comes with the room's
+ * name, but a DM's, and the author's, and its id: a bot's webhook `BOT_WEBHOOK` reads once the
+ * delivery's turn comes. Nothing once the Workspace has applied the message's event. Webhooks,
+ * subscriptions and agents are few, so they're read first, with @ember, and each one's bot and
+ * membership found by their keys.
  * The bots a new message, numbered ?4, by ?2 in room ?1 goes to: in a DM, the active bots in it, and in
  * any other room, the active bots in it whom the message mentions, a JSON list ?3; never its author.
  * They're the bots with webhooks, which it's delivered to, and @ember and the agents, which answer it
  * (`answers` 1) unless a bot wrote it, @ember or an agent among them, so that bots can't keep each other
- * talking. Each comes with the room's name, but a DM's, and the author's, and its id: a bot's webhook
- * `BOT_WEBHOOK` reads once the delivery's turn comes. Nothing once the Workspace has applied the
- * message's event. Webhooks and agents are few, so they're read first, with @ember, and each one's bot
- * and membership found by their keys.
+ * talking, or it's from someone an agent kept for administrators doesn't answer (`answersTo`). Each
+ * comes with the room's name, but a DM's, and the author's, and its id: a bot's webhook `BOT_WEBHOOK`
+ * reads once the delivery's turn comes. Nothing once the Workspace has applied the message's event.
+ * Webhooks and agents are few, so they're read first, with @ember, and each one's bot and membership
+ * found by their keys.
  */
-export const MESSAGE_BOTS = `SELECT users.id, bots.answers,
+export const MESSAGE_BOTS = `SELECT users.id, bots.answers, bots.subscribed,
     (SELECT name FROM rooms WHERE id = ?1 AND kind <> 'direct') AS room_name, (SELECT name FROM users AS authors WHERE authors.id = ?2) AS author_name
-  FROM (SELECT user_id, 0 AS answers FROM webhooks UNION ALL SELECT '${ASSISTANT_ID}', 1 UNION ALL SELECT user_id, 1 FROM agents) AS bots
+  FROM (SELECT user_id, 0 AS answers, 0 AS subscribed FROM webhooks
+        UNION ALL SELECT user_id, 0, 1 FROM bot_subscriptions WHERE room_id = ?1
+        UNION ALL SELECT '${ASSISTANT_ID}', 1, 0 UNION ALL SELECT user_id, 1, 0 FROM agents) AS bots
     CROSS JOIN users ON users.id = bots.user_id
   WHERE users.role = ${BOT} AND users.status = ${ACTIVE} AND users.id <> ?2
     AND (bots.answers = 0 OR NOT EXISTS (SELECT 1 FROM users AS authors WHERE authors.id = ?2 AND authors.role = ${BOT}))
     AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = ?1 AND memberships.user_id = users.id)
-    AND (users.id IN (SELECT value FROM json_each(?3)) OR EXISTS (SELECT 1 FROM rooms WHERE id = ?1 AND kind = 'direct'))
+    AND (users.id IN (SELECT value FROM json_each(?3)) OR EXISTS (SELECT 1 FROM rooms WHERE id = ?1 AND kind = 'direct') OR bots.subscribed = 1)
+    AND ${answersTo("?2", "?1")}
     AND ?4 > (SELECT applied_seq FROM rooms WHERE id = ?1)
   ORDER BY lower(users.name), users.id`;
 
-/** A bot a new message goes to, as `MESSAGE_BOTS` finds it, and whether it answers it, as @ember and the agents do. */
+/** A bot a new message goes to, as `MESSAGE_BOTS` finds it, and whether it answers it, as @ember and the agents do, or watches the room's messages. */
 interface MessageBotRow {
   id: UserId;
   answers: number;
+  subscribed: number;
   room_name: string | null;
   author_name: string;
 }
 
 /** Where a new message goes, from the rows `MESSAGE_BOTS` found for it: to bots' webhooks, and to @ember and the agents to answer. */
 function messageDeliveries({ userId, message }: RoomEvent, rows: MessageBotRow[]): Array<MessageWebhook & { answers: boolean }> {
-  return rows.map((row) => ({ messageId: message!.id, author: { id: userId, name: row.author_name }, roomName: row.room_name, botId: row.id, answers: row.answers === 1 }));
+  // A bot mentioned and watching the room's messages both goes once, as the event it watches.
+  const once = new Map<UserId, MessageWebhook & { answers: boolean }>();
+  for (const row of rows) {
+    const delivery = {
+      messageId: message!.id,
+      author: { id: userId, name: row.author_name },
+      roomName: row.room_name,
+      botId: row.id,
+      subscribed: row.subscribed === 1,
+      answers: row.answers === 1,
+    };
+    const kept = once.get(row.id);
+    if (!kept || (!kept.subscribed && delivery.subscribed)) once.set(row.id, delivery);
+  }
+  return [...once.values()];
 }
 
 /**
@@ -1793,6 +2573,68 @@ const ROOM_MEMBER = `SELECT users.name, users.role = ${ADMINISTRATOR} AS adminis
   WHERE users.id = ?2 AND users.status = ${ACTIVE}
     AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = ?1 AND memberships.user_id = users.id)`;
 
+/** The columns every command reads, its own and its bot's. */
+interface CommandRow {
+  id: string;
+  name: string;
+  description: string | null;
+  bot_id: UserId;
+  bot_name: string;
+}
+
+/**
+ * The workspace's commands, by name, each with the bot it invokes by its name now: a deactivated bot's
+ * command goes with the bot, and a removed command's name is free again.
+ */
+const COMMANDS = `SELECT commands.id, commands.name, commands.description, users.id AS bot_id, users.name AS bot_name
+  FROM commands JOIN users ON users.id = commands.bot_id
+  ORDER BY commands.name`;
+
+/** The command `?1` names, with the bot that invokes it, by its name now: nothing unless there is one. */
+const COMMAND_BY_NAME = `SELECT commands.id, commands.name, commands.description, users.id AS bot_id, users.name AS bot_name
+  FROM commands JOIN users ON users.id = commands.bot_id
+  WHERE commands.name = ?1`;
+
+/** The command `?1` is, with the bot that invokes it by its name now: nothing unless there is one. */
+const COMMAND_BY_ID = `SELECT commands.id, commands.name, commands.description, users.id AS bot_id, users.name AS bot_name
+  FROM commands JOIN users ON users.id = commands.bot_id
+  WHERE commands.id = ?1`;
+
+/** A shortcut is the same columns as a command, kept as its own rows (migrations/0091_shortcuts.sql) are. */
+type ShortcutRow = CommandRow;
+
+/** The workspace's shortcuts, by name, each with the bot it invokes by its name now: a deactivated bot's shortcut goes with the bot. */
+const SHORTCUTS = `SELECT shortcuts.id, shortcuts.name, shortcuts.description, users.id AS bot_id, users.name AS bot_name
+  FROM shortcuts JOIN users ON users.id = shortcuts.bot_id
+  ORDER BY shortcuts.name`;
+
+/** The shortcut `?1` is, with the bot that invokes it by its name now: nothing unless there is one. */
+const SHORTCUT_BY_ID = `SELECT shortcuts.id, shortcuts.name, shortcuts.description, users.id AS bot_id, users.name AS bot_name
+  FROM shortcuts JOIN users ON users.id = shortcuts.bot_id
+  WHERE shortcuts.id = ?1`;
+
+/** Whether a shortcut with the name `?1` is registered already, which a new one can't take. */
+const SHORTCUT_BY_NAME = `SELECT shortcuts.id FROM shortcuts WHERE shortcuts.name = ?1`;
+
+/** Puts bot ?2 on room ?1's message events, unless it's there already, and answers when it joined them. */
+const SUBSCRIBE = `INSERT INTO bot_subscriptions (room_id, user_id, created_at) VALUES (?1, ?2, ?3)
+  ON CONFLICT (room_id, user_id) DO NOTHING RETURNING room_id`;
+
+/** Takes bot ?2 off room ?1's message events, answering whether it was on them. */
+const UNSUBSCRIBE = `DELETE FROM bot_subscriptions WHERE room_id = ?1 AND user_id = ?2 RETURNING room_id`;
+
+/** Which of the active bots are on which rooms' message events, for the bots page's ticks. */
+const SUBSCRIPTIONS = `SELECT bot_subscriptions.user_id AS botId, bot_subscriptions.room_id AS roomId
+  FROM bot_subscriptions JOIN users ON users.id = bot_subscriptions.user_id
+  WHERE users.status = ${ACTIVE} ORDER BY bot_subscriptions.user_id, bot_subscriptions.room_id`;
+
+/** The same, but for ?1, who isn't an administrator: only the subscriptions to rooms they're in, since one names a room and its bot they may not read of. */
+const SUBSCRIPTIONS_IN_ROOMS_OF = `SELECT bot_subscriptions.user_id AS botId, bot_subscriptions.room_id AS roomId
+  FROM bot_subscriptions JOIN users ON users.id = bot_subscriptions.user_id
+  WHERE users.status = ${ACTIVE}
+    AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = bot_subscriptions.room_id AND memberships.user_id = ?1)
+  ORDER BY bot_subscriptions.user_id, bot_subscriptions.room_id`;
+
 /** Whether a room's event is a new message: anyone's, or a bot's reply to a webhook delivery. */
 const isNewMessage = ({ kind }: RoomEvent) => kind !== "read";
 
@@ -1808,6 +2650,9 @@ const APPLIED_WITH_MESSAGE = `UPDATE rooms SET applied_seq = ?1, last_message_at
 
 /** Whether someone is one of the workspace's active administrators. */
 export const ACTIVE_ADMINISTRATOR = `SELECT 1 FROM users WHERE id = ? AND role = ${ADMINISTRATOR} AND status = ${ACTIVE}`;
+
+/** The active administrators, who alone hear of an AI agent only their direct messages reach. */
+const ACTIVE_ADMINISTRATORS = `SELECT id AS user_id FROM users WHERE role = ${ADMINISTRATOR} AND status = ${ACTIVE}`;
 
 /**
  * Renames the workspace and records when, unless it has that name already.
@@ -1825,6 +2670,8 @@ export const setSetting = (key: string) => `UPDATE accounts SET settings = json_
 const SET_TAGLINE = setSetting("tagline");
 const SET_HIDE_TRANSLATION_BUTTONS = setSetting("hide_translation_buttons");
 const SET_RESTRICT_ROOM_CREATION = setSetting("restrict_room_creation_to_administrators");
+const SET_HUDDLE_CAMERAS = setSetting("huddle_cameras");
+const SET_HUDDLE_SCREENS = setSetting("huddle_screens");
 const SET_CUSTOM_DOMAIN = setSetting("custom_domain");
 const SET_JOIN_LINK = setSetting("join_link");
 const SET_OPEN_SIGN_UP = setSetting("open_sign_up");
@@ -1837,6 +2684,9 @@ const SET_RESEND_API_KEY = setSetting("resend_api_key");
 const SET_TURNSTILE_KEYS = setSetting("turnstile_keys");
 const SET_MEMBERFUL_KEYS = setSetting("memberful_keys");
 const SET_HUDDLES = setSetting("huddles");
+const SET_SSO = setSetting("sso");
+const SET_SSO_JOIN = setSetting("sso_join");
+const SET_SSO_SIGN_IN = setSetting("sso_sign_in");
 const SET_ASSISTANT = setSetting("assistant");
 
 /**
@@ -1854,6 +2704,7 @@ const REMEMBER_ASSISTANT_LIMITS = rememberSetting("assistant_limits");
 const REMEMBER_ASSISTANT_INSTRUCTIONS = rememberSetting("assistant_instructions");
 const REMEMBER_ASSISTANT_PROMPT_TEMPLATE = rememberSetting("assistant_prompt_template");
 const REMEMBER_OTHER_ADDRESSES = rememberSetting("other_addresses");
+const REMEMBER_BLOCKED_WORDS = rememberSetting("blocked_words");
 
 /** Navigation icon changes as the merge patch `CHANGE_NAVIGATION_ICONS` takes them: null for a slot's default. */
 const navigationIconsPatch = (changes: NavigationIconChanges) => Object.fromEntries(Object.entries(changes).map(([slot, icon]) => [slot, icon || null]));
@@ -1919,13 +2770,41 @@ const AFTER_UNSTAR = afterStarring(STARRABLE);
 /** The rooms ?1 has starred and can star, in the order they starred them. */
 const FAVORITES_FOR_USER = `SELECT room_id FROM favorites WHERE user_id = ?1 AND room_id IN (${STARRABLE_ROOMS}) ORDER BY position`;
 
+/** Which of a huddle's sounds someone hears, as their row keeps each: 1 until they turn it off. */
+const HUDDLE_SOUNDS = `huddle_music AS music, huddle_chimes AS chimes, huddle_ring AS ring`;
+
+interface HuddleSoundsRow {
+  music: number;
+  chimes: number;
+  ring: number;
+}
+
+const huddleSoundsOf = ({ music, chimes, ring }: HuddleSoundsRow): HuddleSounds => ({ music: music === 1, chimes: chimes === 1, ring: ring === 1 });
+
+/** Whether a sound is turned on, 1, or off, 0, or left as it is, null. */
+const turned = (on: boolean | undefined) => (on === undefined ? null : on ? 1 : 0);
+
 /**
- * The version of ?'s stars, and whether they're given the welcome card: whether they're an active
- * administrator who hasn't dismissed it.
+ * Turns the music of a huddle on or off for ?1, as ?2 says, its chimes as ?3 does and its ring as ?4
+ * does, each staying as it is at null, answering which they hear then. Nothing is kept for someone who
+ * has deleted their account, whose row keeps none of their picks.
  */
-const SIDEBAR_USER = `SELECT favorites_version AS version,
-    role = ${ADMINISTRATOR} AND status = ${ACTIVE} AND invitation_dismissed_at IS NULL AS invited
+const SET_HUDDLE_SOUNDS = `UPDATE users SET huddle_music = coalesce(?2, huddle_music), huddle_chimes = coalesce(?3, huddle_chimes), huddle_ring = coalesce(?4, huddle_ring)
+  WHERE id = ?1 AND deleted_at IS NULL RETURNING ${HUDDLE_SOUNDS}`;
+
+/**
+ * The versions of ?'s stars and blocks, whether they're given the welcome card: whether they're an
+ * active administrator who hasn't dismissed it, and which of a huddle's sounds they hear.
+ */
+const SIDEBAR_USER = `SELECT favorites_version AS version, blocks_version,
+    role = ${ADMINISTRATOR} AND status = ${ACTIVE} AND invitation_dismissed_at IS NULL AS invited, ${HUDDLE_SOUNDS}
   FROM users WHERE id = ?`;
+
+interface SidebarUserRow extends HuddleSoundsRow {
+  version: number;
+  blocks_version: number;
+  invited: number;
+}
 
 /** Records that ?2 dismissed the welcome card at ?1, unless they had already. */
 const DISMISS_INVITATION = `UPDATE users SET invitation_dismissed_at = ?1 WHERE id = ?2 AND invitation_dismissed_at IS NULL`;
@@ -1944,6 +2823,60 @@ const COUNT_HIDDEN_STAR = `UPDATE users SET favorites_version = favorites_versio
 
 /** Gives ?1 level ?3 in room ?2, if they're in it. */
 const SET_INVOLVEMENT = `UPDATE memberships SET involvement = ?3 WHERE user_id = ?1 AND room_id = ?2 RETURNING involvement`;
+
+/**
+ * Records that ?1 blocked ?2 at ?4, unless they had already, or ?2 is ?1, with their level in the DM
+ * that key ?3 names, theirs with ?2 alone, if they have it and it isn't hidden, for unblocking to give back.
+ */
+const BLOCK = `INSERT INTO blocks (user_id, blocked_id, created_at, direct_involvement)
+  SELECT ?1, users.id, ?4, (SELECT memberships.involvement FROM rooms JOIN memberships ON memberships.room_id = rooms.id
+      WHERE rooms.direct_key = ?3 AND memberships.user_id = ?1 AND memberships.involvement <> 'invisible')
+  FROM users WHERE users.id = ?2 AND users.id <> ?1
+  ON CONFLICT DO NOTHING`;
+
+/**
+ * Hides from ?1's sidebar the DM that key ?2 names, theirs with ?3 alone, when they blocked ?3 at ?4,
+ * answering it if it did. Blocking them again leaves be a DM they've shown since or started after.
+ */
+const HIDE_BLOCKED_DIRECT = `UPDATE memberships SET involvement = 'invisible'
+  WHERE user_id = ?1 AND room_id = (SELECT id FROM rooms WHERE direct_key = ?2) AND involvement <> 'invisible'
+    AND EXISTS (SELECT 1 FROM blocks WHERE user_id = ?1 AND blocked_id = ?3 AND created_at = ?4)
+  RETURNING room_id, involvement`;
+
+/**
+ * Shows ?1's DM that key ?2 names, theirs with ?3 alone, at the level it had before blocking ?3 hid it,
+ * if it's hidden still, answering it if it did. It runs before the block goes, to read that level.
+ */
+const SHOW_UNBLOCKED_DIRECT = `UPDATE memberships SET involvement = (SELECT direct_involvement FROM blocks WHERE user_id = ?1 AND blocked_id = ?3)
+  WHERE user_id = ?1 AND room_id = (SELECT id FROM rooms WHERE direct_key = ?2) AND involvement = 'invisible'
+    AND EXISTS (SELECT 1 FROM blocks WHERE user_id = ?1 AND blocked_id = ?3 AND direct_involvement IS NOT NULL)
+  RETURNING room_id, involvement`;
+
+/** Counts a change to ?'s blocks. */
+const COUNT_BLOCKS_CHANGE = `UPDATE users SET blocks_version = blocks_version + 1 WHERE id = ? RETURNING blocks_version AS version`;
+
+/** How many open reports someone, ?, sees, which leave out the reports of them, if they're an active administrator (reports/store.ts). */
+export const OPEN_REPORTS_OF_ADMINISTRATOR = `SELECT (SELECT count(*) FROM reports WHERE handled_at IS NULL AND subject_id <> users.id) AS open
+  FROM users WHERE id = ? AND role = ${ADMINISTRATOR} AND status = ${ACTIVE}`;
+
+/** Whom ? has blocked, in the order they blocked them. */
+export const BLOCKED_BY_USER = `SELECT blocked_id FROM blocks WHERE user_id = ? ORDER BY created_at, blocked_id`;
+
+/** Counts a change to the blocks of everyone who has blocked ?, answering each. */
+const COUNT_BLOCKERS_CHANGE = `UPDATE users SET blocks_version = blocks_version + 1
+  WHERE id IN (SELECT user_id FROM blocks WHERE blocked_id = ?) RETURNING id, blocks_version AS version`;
+
+/** Whom everyone who has blocked ?1 has blocked but them, each in the order they blocked them. */
+const BLOCKED_BY_BLOCKERS = `SELECT user_id, blocked_id FROM blocks
+  WHERE user_id IN (SELECT user_id FROM blocks WHERE blocked_id = ?1) AND blocked_id <> ?1
+  ORDER BY user_id, created_at, blocked_id`;
+
+/**
+ * The names of the people a JSON array ?2 names who have blocked ?1, by name, for refusing a DM ?1 starts
+ * with them (`notTakingDirects`).
+ */
+const BLOCKERS_OF = `SELECT users.name FROM blocks JOIN users ON users.id = blocks.user_id
+  WHERE blocks.blocked_id = ?1 AND blocks.user_id IN (SELECT value FROM json_each(?2)) ORDER BY lower(users.name), users.id`;
 
 /**
  * Whether ?2, a JSON array of distinct room ids, is exactly the rooms ?1 has starred and can star, so
@@ -2001,19 +2934,20 @@ export function mergedSharedOrder(saved: Array<{ id: RoomId; orderable: boolean 
   return [...merged, ...listed];
 }
 
-/** Everyone active, by name. */
-export const ACTIVE_PEOPLE = `SELECT id, name FROM users WHERE status = ${ACTIVE} ORDER BY lower(name), id`;
+/** Everyone active who can be put in a room, by name: all but an AI agent only administrators' direct messages reach, which is in none. */
+export const ACTIVE_PEOPLE = `SELECT id, name FROM users WHERE status = ${ACTIVE} AND agent_access IS NOT 'admin-dms' ORDER BY lower(name), id`;
 
 /**
  * What the people directory lists of whoever `users` reads, as `DirectoryRow` has it, with whether they're
  * an AI agent: a bot without a token, as @ember and the agents administrators make are and chat bots never
- * are, deleted agents too, whose answers stay.
+ * are, deleted agents too, whose answers stay, and whom an agent not everyone can ask is kept for
+ * (migrations/0063_agent_access.sql).
  */
-const DIRECTORY_COLUMNS = `users.id, users.name, users.bio, users.role, users.status, users.updated_at,
-  (users.role = ${BOT} AND users.bot_token IS NULL) AS agent`;
+const DIRECTORY_COLUMNS = `users.id, users.name, users.username, users.bio, users.mood, users.role, users.status, users.updated_at,
+  (users.role = ${BOT} AND users.bot_token IS NULL) AS agent, users.agent_access`;
 
-/** Everyone, for the people directory: removed and banned people too, whose messages stay. */
-const DIRECTORY = `SELECT ${DIRECTORY_COLUMNS} FROM users ORDER BY id`;
+/** Everyone ?1 is told of, for the people directory: removed and banned people too, whose messages stay (`listedTo`). */
+const DIRECTORY = `SELECT ${DIRECTORY_COLUMNS} FROM users WHERE ${listedTo("?1")} ORDER BY id`;
 
 /** Someone active, as the directory lists them. */
 const ACTIVE_PERSON = `SELECT ${DIRECTORY_COLUMNS} FROM users WHERE id = ? AND status = ${ACTIVE}`;
@@ -2040,9 +2974,10 @@ const ACTIVE_BOTS_ROOMS = `SELECT memberships.user_id, rooms.id, rooms.name
   ORDER BY lower(rooms.name), rooms.id`;
 
 /**
- * An active bot, with its token and where its webhook delivers. @ember and the agents aren't, as above.
+ * An active bot, with its token, where its webhook delivers, and whether it's kept to the open rooms
+ * picked. @ember and the agents aren't, as above.
  */
-const ACTIVE_BOT = `SELECT ${DIRECTORY_COLUMNS}, users.bot_token, webhooks.url AS webhook_url
+const ACTIVE_BOT = `SELECT ${DIRECTORY_COLUMNS}, users.bot_token, webhooks.url AS webhook_url, users.rooms_picked
   FROM users LEFT JOIN webhooks ON webhooks.user_id = users.id
   WHERE users.id = ? AND users.status = ${ACTIVE} AND users.role = ${BOT} AND users.id <> '${ASSISTANT_ID}' AND ${NOT_AN_AGENT}`;
 
@@ -2055,8 +2990,8 @@ const ACTIVE_BOT_KEY = `SELECT users.id, users.name, users.bot_token, webhooks.u
   FROM users LEFT JOIN webhooks ON webhooks.user_id = users.id
   WHERE users.id = ?2 AND users.status = ${ACTIVE} AND users.role = ${BOT}`;
 
-/** The rooms a bot is in but its DMs, by name. */
-const BOT_ROOMS = `SELECT rooms.id, rooms.name FROM memberships JOIN rooms ON rooms.id = memberships.room_id
+/** The rooms a bot is in but its DMs, by name, with whether each is open. */
+const BOT_ROOMS = `SELECT rooms.id, rooms.name, rooms.kind FROM memberships JOIN rooms ON rooms.id = memberships.room_id
   WHERE memberships.user_id = ? AND rooms.kind <> 'direct' ORDER BY lower(rooms.name), rooms.id`;
 
 /** An active bot's token, for the Slack-compatible Web API to compare a key with. @ember and the agents aren't, as the bots page's keys aren't theirs. */
@@ -2084,6 +3019,20 @@ const KEPT_AGENTS_ROOMS = `SELECT memberships.user_id, rooms.id, rooms.name
   FROM agents JOIN users ON users.id = agents.user_id JOIN memberships ON memberships.user_id = agents.user_id JOIN rooms ON rooms.id = memberships.room_id
   WHERE agents.every_open_room = 0 AND users.status = ${ACTIVE} AND rooms.kind = 'open' ORDER BY lower(rooms.name), rooms.id`;
 
+/** The active agents ?1 can ask (`askedBy`), by name, as Available Agents lists them: as the people directory does, with what each does. */
+const AVAILABLE_AGENTS = `SELECT ${DIRECTORY_COLUMNS}, agents.description, agents.every_open_room FROM agents JOIN users ON users.id = agents.user_id
+  WHERE users.status = ${ACTIVE} AND ${askedBy("?1")} ORDER BY lower(users.name), users.id`;
+
+/**
+ * The rooms but DMs each active agent kept to the open rooms picked shares with ?1, by name: the open
+ * rooms it's in, which everyone is in, and the private rooms it was put in that they're in too.
+ */
+const AVAILABLE_AGENTS_ROOMS = `SELECT theirs.user_id, rooms.id, rooms.name
+  FROM agents JOIN users ON users.id = agents.user_id JOIN memberships AS theirs ON theirs.user_id = agents.user_id JOIN rooms ON rooms.id = theirs.room_id
+  WHERE agents.every_open_room = 0 AND users.status = ${ACTIVE} AND rooms.kind <> 'direct'
+    AND EXISTS (SELECT 1 FROM memberships AS mine WHERE mine.room_id = theirs.room_id AND mine.user_id = ?1)
+  ORDER BY lower(rooms.name), rooms.id`;
+
 /** An active agent as its page shows it, with its avatar and who last changed it. */
 const ACTIVE_AGENT = `SELECT ${AGENT_COLUMNS}, users.avatar_key, users.avatar_variant,
     agents.instructions, agents.prompt_template, agents.format, agents.thinking_levels, agents.thinking, agents.answer_length,
@@ -2092,14 +3041,16 @@ const ACTIVE_AGENT = `SELECT ${AGENT_COLUMNS}, users.avatar_key, users.avatar_va
   WHERE agents.user_id = ? AND users.status = ${ACTIVE}`;
 
 /**
- * Agent ?2 as a question for it in room ?1 finds it, when its turn comes and again before its answer is
- * posted: its name, its model, and how it answers. Nothing unless it's an active agent in the room, so
- * that turning Ember AI off, deleting the agent or taking it out of the room stops what's on its way.
+ * Agent ?2 as a question ?3 asked it in room ?1 finds it, when its turn comes and again before its answer
+ * is posted: its name, its model, and how it answers. Nothing unless it's an active agent in the room
+ * that answers them there (`answersTo`), so that turning Ember AI off, deleting the agent, taking it out
+ * of the room, keeping it for administrators or making whoever asked a member stops what's on its way.
  */
-const ANSWERING_AGENT = `SELECT users.name, agents.model, agents.instructions, agents.prompt_template, agents.format, agents.thinking_levels, agents.thinking,
+export const ANSWERING_AGENT = `SELECT users.name, agents.model, agents.instructions, agents.prompt_template, agents.format, agents.thinking_levels, agents.thinking,
     agents.answer_length, agents.web_tools
   FROM agents JOIN users ON users.id = agents.user_id
-  WHERE agents.user_id = ?2 AND users.status = ${ACTIVE} AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = ?1 AND memberships.user_id = ?2)`;
+  WHERE agents.user_id = ?2 AND users.status = ${ACTIVE} AND EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = ?1 AND memberships.user_id = ?2)
+    AND ${answersTo("?3", "?1")}`;
 
 /** The open rooms someone is in, by name. */
 const OPEN_ROOMS_OF = `SELECT rooms.id, rooms.name FROM memberships JOIN rooms ON rooms.id = memberships.room_id
@@ -2124,6 +3075,9 @@ const MOVE_AGENTS_MODEL = `UPDATE agents SET format = ?, thinking_levels = ? WHE
 const CHANGE_AGENT = `UPDATE agents SET description = ?2, instructions = ?3, model = ?4, model_name = ?5, format = ?6, thinking = ?7, answer_length = ?8,
   web_tools = ?9, prompt_template = ?10, thinking_levels = ?11, updated_by = ?12, updated_at = ?13 WHERE user_id = ?1`;
 
+/** Keeps whom agent ?2 is for on its user: 'admins', 'admin-dms', or null for everyone. */
+const KEEP_AGENT_FOR = `UPDATE users SET agent_access = ?1 WHERE id = ?2`;
+
 /** Puts ?1 in the open rooms the JSON list ?2 names, of those there are, keeping the memberships it has. */
 const GRANT_PICKED_ROOMS = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
   SELECT rooms.id, ?1, ?3, ?3 FROM json_each(?2) AS picked JOIN rooms ON rooms.id = picked.value WHERE rooms.kind = 'open' ON CONFLICT DO NOTHING`;
@@ -2131,6 +3085,15 @@ const GRANT_PICKED_ROOMS = `INSERT INTO memberships (room_id, user_id, created_a
 /** Takes ?1 out of the open rooms the JSON list ?2 doesn't name. */
 const LEAVE_UNPICKED_ROOMS = `DELETE FROM memberships WHERE user_id = ?1 AND room_id NOT IN (SELECT value FROM json_each(?2))
   AND EXISTS (SELECT 1 FROM rooms WHERE rooms.id = memberships.room_id AND rooms.kind = 'open')`;
+
+/**
+ * Queues turning away, with code ?3, due at ?4, what ?1 was let send to the open rooms it's in that the
+ * JSON list ?2 doesn't name, which `LEAVE_UNPICKED_ROOMS` then takes it out of, answering a row for each.
+ */
+const QUEUE_UNPICKED_ROOM_REVOCATIONS = `INSERT INTO pending_revocations (room_id, tag, code, due_at)
+  SELECT memberships.room_id, ?1, ?3, ?4 FROM memberships JOIN rooms ON rooms.id = memberships.room_id
+  WHERE memberships.user_id = ?1 AND rooms.kind = 'open' AND memberships.room_id NOT IN (SELECT value FROM json_each(?2))
+  RETURNING id`;
 
 /**
  * Keeps the open rooms each active agent kept to the open rooms picked is in, as Ember AI is turned off,
@@ -2207,6 +3170,19 @@ const forgettingSearches = (userId: UserId): Statement[] => [
   statement(`DELETE FROM searches WHERE user_id = ?`, userId),
 ];
 
+/**
+ * What lapsing a guest's stay writes before it marks them deactivated: the closing of their sockets in
+ * every room they're in, their sessions' end, and their forgotten recent searches and push
+ * subscriptions, as removing them closes and forgets them.
+ */
+const lapsedStayStatements = (userId: UserId, code: CloseCode, dueAt: number, now: string): Statement[] => [
+  // Before their sessions go, which it finds their sockets by.
+  statement(QUEUE_PERSON_SESSION_REVOCATIONS, SESSION_TAG_PREFIX, code, dueAt, userId),
+  statement(`DELETE FROM sessions WHERE user_id = ?`, userId),
+  ...forgettingSearches(userId),
+  statement(`DELETE FROM push_subscriptions WHERE user_id = ?`, userId),
+];
+
 /** A recent search from its key, or null for one that isn't a search. */
 function recentSearchOf(key: string): Search | null {
   try {
@@ -2253,6 +3229,34 @@ const TRIM_PUSH_SUBSCRIPTIONS = `DELETE FROM push_subscriptions WHERE user_id = 
 const FORGET_SESSION_PUSH_ENDPOINT = `DELETE FROM push_subscriptions
   WHERE user_id = (SELECT user_id FROM sessions WHERE token_digest = ?1) AND endpoint = ?2`;
 
+/**
+ * Saves a message for later for someone, unless they have it saved already, which the WHERE leaves
+ * alone. In one batch with the count of what it added and the trim that keeps no more than the newest
+ * MAX_SAVES, since they read each other's writes and D1 has no other kind of transaction.
+ */
+const SAVE_MESSAGE = `INSERT INTO saves (id, user_id, room_id, message_id, created_at)
+  SELECT ?1, ?2, ?3, ?4, ?5
+  WHERE NOT EXISTS (SELECT 1 FROM saves WHERE user_id = ?2 AND room_id = ?3 AND message_id = ?4)`;
+
+/** How many rows the statement before it added: 1 when it saved the message, 0 when it was saved already. */
+const SAVE_MESSAGE_COUNT = `SELECT changes() AS inserted`;
+
+/** Someone's saves, newest save first, at most the MAX_SAVES they saved most recently, as the index on (user_id, created_at) reads them, ties as the trim that keeps the newest reads them. */
+const SAVES_FOR_USER = `SELECT id, room_id, message_id, created_at FROM saves WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?`;
+
+/** Deletes someone's save ?2, if it's theirs. */
+const FORGET_SAVE = `DELETE FROM saves WHERE id = ?1 AND user_id = ?2`;
+
+/** The number of rows the statement before it deleted. */
+const FORGET_SAVE_COUNT = `SELECT changes() AS gone`;
+
+/** Deletes the saves `ids` name, which an answer about someone's saves has dropped: the messages are gone, or their rooms are. */
+const FORGET_SAVES = `DELETE FROM saves WHERE id IN (SELECT value FROM json_each(?))`;
+
+/** Forgets someone's saves past the ?2 they saved most recently, so that saving on can't have the list every page load asks for grow without end. */
+const TRIM_SAVES = `DELETE FROM saves WHERE user_id = ?1
+  AND id NOT IN (SELECT id FROM saves WHERE user_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2)`;
+
 /** Gives someone a role and records when. */
 const CHANGE_ROLE = `UPDATE users SET role = ?, updated_at = ? WHERE id = ?`;
 
@@ -2269,8 +3273,33 @@ const LEAVE_SHARED_ROOMS = `DELETE FROM memberships WHERE user_id = ?
  */
 const DEACTIVATE = `UPDATE users SET status = ${DEACTIVATED}, email_address = replace(email_address, '@', ?), updated_at = ? WHERE id = ?`;
 
+/**
+ * Deletes someone's account, ?3's, recording when, ?2: their row stays, deactivated, as a removed
+ * person's does, so the rooms and DMs they were in still name somebody, but called ?1, with no email
+ * address, password, username, bio, avatar or picks of theirs, and no longer an administrator. Their
+ * username is free for anyone then, as their email address is.
+ */
+const DELETE_ACCOUNT = `UPDATE users SET name = ?1, status = ${DEACTIVATED}, role = ${MEMBER}, email_address = NULL, email_verified_at = NULL, password_digest = NULL, username = NULL, bio = NULL, mood = NULL,
+  avatar_key = NULL, avatar_variant = NULL, assistant_thinking = NULL, assistant_answer_length = NULL, assistant_model = NULL,
+  huddle_music = 1, huddle_chimes = 1, huddle_ring = 1, invitation_dismissed_at = NULL, deleted_at = ?2, updated_at = ?2 WHERE id = ?3`;
+
+/**
+ * Takes what the reports of someone, ?2, kept of them (reports/store.ts) once they've deleted their
+ * account: a message's text, the people it mentions, its file and cards, or their bio, and their name,
+ * calling them ?1 as `DELETE_ACCOUNT` does. Who reported it, why, when, and how it was handled stay.
+ */
+export const CLEAR_REPORTS_OF = `UPDATE reports SET subject = CASE WHEN message_id IS NULL
+    THEN json_set(subject, '$.person.name', ?1, '$.person.bio', NULL, '$.person.accountDeleted', json('true'))
+    ELSE json_set(json_remove(subject, '$.message.attachment', '$.message.cards'), '$.message.creator.name', ?1, '$.message.body', '',
+      '$.message.plainText', '', '$.message.mentions', json('[]'), '$.message.accountDeleted', json('true'))
+  END
+  WHERE subject_id = ?2 RETURNING id`;
+
 /** Someone as the directory lists them, whatever their status. */
 const PERSON = `SELECT ${DIRECTORY_COLUMNS} FROM users WHERE id = ?`;
+
+/** The same, unless they deleted their account, which no ban, nor lifting one, brings back. */
+const BANNABLE_PERSON = `SELECT ${DIRECTORY_COLUMNS} FROM users WHERE id = ? AND deleted_at IS NULL`;
 
 /** The same, with the avatar they've uploaded, or a bot was given. */
 const PERSON_WITH_AVATAR = `SELECT ${DIRECTORY_COLUMNS}, avatar_key, avatar_variant FROM users WHERE id = ?`;
@@ -2293,6 +3322,15 @@ const OWN_PROFILE = `SELECT ${DIRECTORY_COLUMNS}, email_address, avatar_key, ava
 
 /** How much someone picked for @ember to think, how long its answers to them are, and the model it answers them with. */
 const ASSISTANT_PICKS = `SELECT assistant_thinking, assistant_answer_length, assistant_model FROM users WHERE id = ?`;
+
+/** The workspace's profile fields, in the order they come in the profile. */
+const PROFILE_FIELDS = `SELECT id, name, options, position FROM profile_fields ORDER BY position, id`;
+
+/** What someone saved for the workspace's profile fields, by their ids. */
+const PROFILE_FIELD_VALUES = `SELECT field_id, value FROM profile_field_values WHERE user_id = ?`;
+
+/** Where the next field added comes: after the last one, or first for a workspace without any. */
+const NEXT_FIELD_POSITION = `SELECT coalesce(max(position), 0) + 1 AS position FROM profile_fields`;
 
 /**
  * Changes the dials someone picks a level of, ?1 and ?2, a null one staying as it is, and when ?3 is 1,
@@ -2327,42 +3365,89 @@ const QUEUE_PICTURE_DELETION = `INSERT INTO pending_picture_deletions (object_ke
 /** Takes a picture's reservation, now that someone has it, so R2 keeps it. */
 const KEEP_PICTURE = `DELETE FROM pending_picture_deletions WHERE object_key = ?`;
 
-/** Saves someone's profile and records when, keeping their password unless given a new one's digest. */
-const CHANGE_PROFILE = `UPDATE users SET name = ?, email_address = ?, bio = ?, password_digest = coalesce(?, password_digest), updated_at = ?
-  WHERE id = ?`;
+/**
+ * Saves someone's profile and records when, keeping their password unless given a new one's digest, and
+ * forgetting that they proved their email address once it's another.
+ */
+const CHANGE_PROFILE = `UPDATE users SET name = ?1, username = ?2, email_address = ?3, bio = ?4, mood = ?5, password_digest = coalesce(?6, password_digest), updated_at = ?7,
+    email_verified_at = CASE WHEN email_address IS ?3 THEN email_verified_at END
+  WHERE id = ?8`;
 
 /** The same, with whether each is in a room, for its settings. */
 export const ACTIVE_PEOPLE_IN_ROOM = `SELECT users.id, users.name, memberships.user_id IS NOT NULL AS member
   FROM users LEFT JOIN memberships ON memberships.room_id = ? AND memberships.user_id = users.id
-  WHERE users.status = ${ACTIVE} ORDER BY lower(users.name), users.id`;
+  WHERE users.status = ${ACTIVE} AND users.agent_access IS NOT 'admin-dms' ORDER BY lower(users.name), users.id`;
+
+/** The room ?1's members alone, which its settings list the guests of one room, whose directory is its people too. */
+const STAY_PEOPLE_IN_ROOM = `SELECT users.id, users.name, 1 AS member
+  FROM memberships JOIN users ON users.id = memberships.user_id
+  WHERE memberships.room_id = ? AND users.status = ${ACTIVE} ORDER BY lower(users.name), users.id`;
 
 /** The people with the ids in a JSON array, whatever their status. */
 export const PEOPLE_WITH_IDS = `SELECT id, name FROM users WHERE id IN (SELECT value FROM json_each(?))`;
 
+/**
+ * The people a JSON array ?1 names whom ?2 can start a DM with, whatever their status: anyone, but an AI
+ * agent kept for administrators, which only an administrator writes to, and one only their direct
+ * messages reach only while everyone else named is an administrator, so that nobody else is shown it:
+ * no member, and no bot, another agent included, as whoever has a bot's key reads the rooms it's in.
+ */
+export const DIRECT_PEOPLE = `SELECT users.id, users.name FROM users
+  WHERE users.id IN (SELECT value FROM json_each(?1))
+    AND (users.agent_access IS NULL OR (${administratorIs("?2")}
+      AND (users.agent_access <> 'admin-dms' OR NOT EXISTS (SELECT 1 FROM users AS others
+        WHERE others.id IN (SELECT value FROM json_each(?1)) AND others.id <> users.id AND others.role <> ${ADMINISTRATOR}))))`;
+
 /** The same, as the people directory lists them. */
 const DIRECTORY_WITH_IDS = `SELECT ${DIRECTORY_COLUMNS} FROM users WHERE id IN (SELECT value FROM json_each(?))`;
+
+/** The active people with the ids in a JSON array, with whether each is a bot, to check a group's members. */
+const ACTIVE_PEOPLE_WITH_IDS = `SELECT id, role FROM users WHERE status = ${ACTIVE} AND id IN (SELECT value FROM json_each(?))`;
+
+/** The workspace's groups, by name, which is lowercased as it's kept, so the order is theirs already. */
+const GROUPS = `SELECT id, name FROM user_groups ORDER BY lower(name), id`;
+
+/** The groups with the ids in a JSON array. */
+const GROUPS_WITH_IDS = `SELECT id, name FROM user_groups WHERE id IN (SELECT value FROM json_each(?))`;
+
+/** Everyone in the groups with ids in a JSON array, named as they are now, by name. */
+const GROUP_MEMBERS = `SELECT user_group_members.group_id AS groupId, users.id AS userId, users.name AS name
+  FROM user_group_members JOIN users ON users.id = user_group_members.user_id
+  WHERE user_group_members.group_id IN (SELECT value FROM json_each(?)) ORDER BY lower(users.name), users.id`;
+
+/** The group named `name`, which is kept lowercased, as a mention names it. */
+const GROUP_NAMED = `SELECT id FROM user_groups WHERE name = ?`;
+
+/** The group with the id in ?1, named to change or delete it without reading everyone in it. */
+const GROUP_WITH_ID = `SELECT id FROM user_groups WHERE id = ?`;
 
 /** How many people the mentions prompt offers: the first page of them, the only one Lexxy asks for. */
 export const MENTIONABLE_PAGE = 20;
 
 /**
- * Active people whose names contain ?1, by name. It's `LIKE`, so only ASCII letters ignore case, `%` and
- * `_` match anything, and "" matches everyone.
+ * Active people whose names contain ?1, or whose usernames start with it, by name, whom ?2 can ask
+ * (`askedBy`). It's `LIKE`, so only ASCII letters ignore case, `%` and `_` match anything, and "" matches
+ * everyone.
  */
 const MENTIONABLE_PEOPLE = `SELECT ${DIRECTORY_COLUMNS} FROM users
-  WHERE status = ${ACTIVE} AND name LIKE '%' || ?1 || '%' ORDER BY lower(name), id LIMIT ${MENTIONABLE_PAGE}`;
+  WHERE status = ${ACTIVE} AND (name LIKE '%' || ?1 || '%' OR username LIKE ?1 || '%') AND ${askedBy("?2")}
+  ORDER BY lower(name), id LIMIT ${MENTIONABLE_PAGE}`;
 
-/** The same of room ?2's members (`Current.user.rooms.find(room_id).users`). */
+/** The same of room ?2's members (`Current.user.rooms.find(room_id).users`), for ?3. */
 const MENTIONABLE_MEMBERS = `SELECT ${DIRECTORY_COLUMNS}
   FROM memberships JOIN users ON users.id = memberships.user_id
-  WHERE memberships.room_id = ?2 AND users.status = ${ACTIVE} AND users.name LIKE '%' || ?1 || '%'
+  WHERE memberships.room_id = ?2 AND users.status = ${ACTIVE} AND (users.name LIKE '%' || ?1 || '%' OR users.username LIKE ?1 || '%')
+    AND ${askedBy("?3")}
   ORDER BY lower(users.name), users.id LIMIT ${MENTIONABLE_PAGE}`;
 
 /** Whether someone in a room can change it: administrators and the room's creator can. */
 const CAN_ADMINISTER = `(users.role = ${ADMINISTRATOR} OR rooms.creator_id = users.id) AS can_administer`;
 
-/** A room someone is in, unless it's a DM, and whether they can change it. */
-export const ROOM_TO_CHANGE = `SELECT rooms.id, rooms.kind, rooms.name, rooms.icon, ${CAN_ADMINISTER}
+/** Whether they can turn huddles on or off in it: only administrators can, as a Slack workspace's owners and admins can in a channel. */
+const CAN_CHANGE_HUDDLES = `users.role = ${ADMINISTRATOR} AS can_change_huddles`;
+
+/** A room someone is in, unless it's a DM, and whether they can change it, and turn huddles on or off in it. */
+export const ROOM_TO_CHANGE = `SELECT rooms.id, rooms.kind, rooms.name, rooms.icon, rooms.huddles_allowed, ${CAN_ADMINISTER}, ${CAN_CHANGE_HUDDLES}
   FROM memberships JOIN rooms ON rooms.id = memberships.room_id JOIN users ON users.id = memberships.user_id
   WHERE memberships.room_id = ? AND memberships.user_id = ? AND rooms.kind <> 'direct'`;
 
@@ -2382,18 +3467,33 @@ const ROOM_TO_DELETE = `SELECT rooms.kind, ${CAN_ADMINISTER}
 // backends bind at most 100 values a statement. A WHERE clause comes before each ON CONFLICT, which
 // SQLite would otherwise read as part of a join.
 
-/** Puts someone new in every open room. */
+/**
+ * Puts someone new in every open room, unless a stay of a guest of one room holds them, whose rooms
+ * their stay bounds: unbanning or letting back a suspended guest puts them in none.
+ */
 const GRANT_OPEN_ROOMS_TO_USER = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
-  SELECT id, ?, ?, ? FROM rooms WHERE kind = 'open' ON CONFLICT DO NOTHING`;
+  SELECT id, ?, ?, ? FROM rooms WHERE kind = 'open' AND ? NOT IN (SELECT user_id FROM guest_stays)
+  ON CONFLICT DO NOTHING`;
 
 /**
  * Puts every active person in an open room, keeping the memberships they already have, and answers whom
- * it put in. Agents kept to the open rooms an administrator picked stay out.
+ * it put in. Agents kept to the open rooms an administrator picked stay out, and so do the guests of one
+ * room, whose stay keeps them to its own room, whoever opens another here.
+ * it put in. Agents and chat bots kept to the open rooms an administrator picked stay out, as do the
+ * agents only administrators' direct messages reach.
  */
 const GRANT_ROOM_TO_ACTIVE_USERS = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
-  SELECT ?, id, ?, ? FROM users WHERE status = ${ACTIVE}
+  SELECT ?, id, ?, ? FROM users WHERE status = ${ACTIVE} AND agent_access IS NOT 'admin-dms' AND rooms_picked IS NULL
     AND NOT EXISTS (SELECT 1 FROM agents WHERE agents.user_id = users.id AND agents.every_open_room = 0)
+    AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)
   ON CONFLICT DO NOTHING RETURNING user_id`;
+
+/** Puts someone whose ban is lifted in every open room, as joining does, unless they're a chat bot kept to the open rooms picked, or a guest of one room, whose stay keeps them to its own. */
+const GRANT_OPEN_ROOMS_TO_UNBANNED = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
+  SELECT rooms.id, users.id, ?2, ?2 FROM rooms, users
+  WHERE rooms.kind = 'open' AND users.id = ?1 AND users.rooms_picked IS NULL
+    AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)
+  ON CONFLICT DO NOTHING`;
 
 /**
  * Adds one of first run's open rooms, made by ?3, unless the workspace has an open room of its name
@@ -2410,10 +3510,17 @@ const GRANT_FIRST_ROOM = `INSERT INTO memberships (room_id, user_id, created_at,
 const OPEN_ROOM_NAMED = `SELECT id, kind, name, icon FROM rooms WHERE kind = 'open' AND name = ? ORDER BY created_at, id LIMIT 1`;
 
 /**
- * Puts the people a JSON list names in a room, whatever their status, and answers whom it put in.
+ * Puts the people a JSON list names in a room, whatever their status, and answers whom it put in — but
+ * none whom the stay of a guest of another room holds, whose rooms it bounds, whoever picks them, and
+ * none of them an AI agent only administrators' direct messages reach, which is in no room. A guest of
+ * the room itself goes back in: their stay outlives their membership, which its settings taking them
+ * out and having them again turns on saving them as its people once more.
  */
 const GRANT_ROOM_TO_USERS = `INSERT INTO memberships (room_id, user_id, created_at, updated_at)
-  SELECT ?, id, ?, ? FROM users WHERE id IN (SELECT value FROM json_each(?)) ON CONFLICT DO NOTHING RETURNING user_id`;
+  SELECT ?1, id, ?2, ?3 FROM users WHERE id IN (SELECT value FROM json_each(?4))
+    AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.room_id <> ?1)
+    AND agent_access IS NOT 'admin-dms'
+  ON CONFLICT DO NOTHING RETURNING user_id`;
 
 /** Takes everyone but the people a JSON list names and anyone suspended whose membership it keeps (`KEPT_SUSPENDED_MEMBERSHIP`) out of a room, and answers whom. */
 export const REVOKE_ROOM_FROM_OTHERS = `DELETE FROM memberships WHERE room_id = ? AND user_id NOT IN (SELECT value FROM json_each(?)) AND NOT ${KEPT_SUSPENDED_MEMBERSHIP}
@@ -2426,13 +3533,14 @@ export const ROOM_MEMBERS = `SELECT user_id FROM memberships WHERE room_id = ?`;
 const ROOM_RANKED = `SELECT shared_position IS NOT NULL AS ranked FROM rooms WHERE id = ?`;
 
 /**
- * Renames a room, changes its kind and sets its icon, keeping whichever is null as it is, and records
- * when, unless nothing changes. An icon of "" is the default `#`, stored as null.
+ * Renames a room, changes its kind, sets its icon and says whether it allows huddles, keeping whichever
+ * is null as it is, and records when, unless nothing changes. An icon of "" is the default `#`, stored
+ * as null.
  */
 const UPDATE_ROOM = `UPDATE rooms SET name = coalesce(?1, name), kind = coalesce(?2, kind),
-    icon = CASE WHEN ?3 IS NULL THEN icon ELSE nullif(?3, '') END, updated_at = ?4
+    icon = CASE WHEN ?3 IS NULL THEN icon ELSE nullif(?3, '') END, huddles_allowed = coalesce(?6, huddles_allowed), updated_at = ?4
   WHERE id = ?5 AND (name IS NOT coalesce(?1, name) OR kind IS NOT coalesce(?2, kind)
-    OR icon IS NOT CASE WHEN ?3 IS NULL THEN icon ELSE nullif(?3, '') END) RETURNING id`;
+    OR icon IS NOT CASE WHEN ?3 IS NULL THEN icon ELSE nullif(?3, '') END OR huddles_allowed IS NOT coalesce(?6, huddles_allowed)) RETURNING id`;
 
 /** Of the rooms a JSON list names, those that are neither registered nor deleted. */
 const UNREGISTERED_ROOMS = `SELECT DISTINCT value AS id FROM json_each(?)
@@ -2633,6 +3741,88 @@ const storedApp = (row: AppRow): StoredApp => ({
   signInClient: row.sign_in_client_id !== null && row.sign_in_client !== null ? { id: row.sign_in_client_id, sealed: row.sign_in_client } : null,
   scopeWanted: row.scope_wanted,
 });
+/** What a reminder's row keeps, named as the protocol's `Reminder` reads it. */
+const REMINDER_FIELDS = `id, room_id AS roomId, message_id AS messageId, parent_id AS parentId, creator_id AS creatorId, creator_name AS creatorName,
+  excerpt, remind_at AS remindAt`;
+
+/** A reminder as its row keeps it, with who asked for it. */
+export interface StoredReminderRow {
+  id: string;
+  roomId: RoomId;
+  messageId: string;
+  parentId: string | null;
+  creatorId: UserId;
+  creatorName: string;
+  excerpt: string;
+  /** When it comes back, as milliseconds are counted. */
+  remindAt: number;
+}
+
+/** A reminder that has come due and still has something to say or push, with who asked for it. */
+export interface DueReminder {
+  id: string;
+  userId: UserId;
+  /** Whether its tabs haven't heard it yet: the run that marks it told is the one that says it. */
+  untold: boolean;
+}
+
+/** A reminder to queue, as `queueReminder` takes it. */
+export interface StoredReminder extends StoredReminderRow {
+  userId: UserId;
+  /** When it was asked for, as milliseconds are counted. */
+  createdAt: number;
+}
+
+/** A reminder read for its delivery: its row, and what its pushes have reached so far. */
+export interface StoredReminderDelivery extends StoredReminderRow {
+  /** The subscriptions its pushes have reached, as the JSON list its row keeps, or null for none of them. */
+  delivered: string | null;
+}
+
+/** Asks a reminder of a message for someone, keeping the message as it reads then. */
+const QUEUE_REMINDER = `INSERT INTO reminders (id, user_id, room_id, message_id, parent_id, creator_id, creator_name, excerpt, remind_at, created_at)
+  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`;
+
+/** Someone's reminders, the one coming soonest first. */
+const REMINDERS_FOR_USER = `SELECT ${REMINDER_FIELDS} FROM reminders WHERE user_id = ? ORDER BY remind_at, id`;
+
+/** One of someone's reminders, theirs alone. */
+const REMINDER_FOR_USER = `SELECT ${REMINDER_FIELDS} FROM reminders WHERE id = ? AND user_id = ?`;
+
+/** One reminder by its id, whoever asked for it, with what its pushes have reached, which a delivery reads again before it tells it. */
+const REMINDER_BY_ID = `SELECT ${REMINDER_FIELDS}, delivered FROM reminders WHERE id = ?`;
+
+/**
+ * How long a reminder's pushes wait to be tried again after a try has failed: five minutes, as long as
+ * the outbox ever puts a failed row off (`LONGEST_RETRY_MS`), so a push service that won't take them
+ * is asked no oftener than this whatever the runs come round. The tries keep the rhythm within the day
+ * past the reminder's time (`REMINDER_PUSH_GRACE_MS` in src/workspace.ts), which spends them.
+ */
+export const REMINDER_PUSH_RETRY_MS = 5 * 60 * 1000;
+
+/** The reminders that have come due and still have a notice to say or pushes to try, the oldest due first. A reminder whose pushes failed waits, since they did, for `REMINDER_PUSH_RETRY_MS`. */
+const DUE_REMINDERS = `SELECT ${REMINDER_FIELDS}, user_id AS userId, reminded_at IS NULL AS untold FROM reminders
+  WHERE remind_at <= ? AND (reminded_at IS NULL OR (pushed_at IS NULL AND COALESCE(push_tried_at, 0) <= ?))
+  ORDER BY remind_at, id LIMIT ?`;
+
+/** Whether someone is in a room, which a reminder of a message in it asks. */
+const IN_ROOM = `SELECT 1 FROM memberships WHERE user_id = ? AND room_id = ?`;
+
+/** The subscriptions someone's browsers have saved, each with the count its push sets the app's badge to, none of them a guest's while ?2 doesn't let guests stay signed in. */
+/**
+ * The push subscriptions of whoever has id ?1, to send a reminder's push to: all of a person's, and a
+ * guest's while they may still be pushed, which their stay of one room is, until it ends, and, while
+ * ?2 lets guests stay signed in, an open sign-in's guest's, which has no stay to end. As ?3 says when,
+ * a stay that ended before now is one no push waits for any more.
+ */
+const PUSH_DELIVERIES_FOR_USER = `SELECT push_subscriptions.id AS "subscriptionId", endpoint, p256dh_key AS "p256dhKey", auth_key AS "authKey",
+    (SELECT count(*) FROM memberships AS marked WHERE marked.user_id = push_subscriptions.user_id AND marked.unread_at IS NOT NULL) AS badge
+  FROM push_subscriptions JOIN users ON users.id = push_subscriptions.user_id
+  WHERE push_subscriptions.user_id = ?1
+    AND (users.guest = 0
+      OR EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id AND guest_stays.until_at > ?3)
+      OR (?2 = 1 AND NOT EXISTS (SELECT 1 FROM guest_stays WHERE guest_stays.user_id = users.id)))
+  ORDER BY push_subscriptions.id`;
 
 /** How many sign-ins to apps can be under way at once: beginning another forgets the one begun longest ago. */
 const MAX_PENDING_APP_SIGN_INS = 20;
@@ -2663,11 +3853,15 @@ export class WorkspaceStore {
       hideTranslationButtons: hidesTranslationButtons(settings),
       customStyles: row.custom_styles ?? "",
       restrictRoomCreation: restrictsRoomCreation(settings),
+      huddleCameras: showsHuddleCameras(settings),
+      huddleScreens: sharesHuddleScreens(settings),
       customDomain: customDomainIn(settings),
       joinLink: joinsWithLinkIn(settings),
       openSignUp: signsUpOpenlyIn(settings),
       memberfulJoin: joinsWithMemberfulIn(settings),
       memberfulSignIn: signsInWithMemberful(settings),
+      ssoJoin: joinsWithSsoIn(settings),
+      ssoSignIn: signsInWithSsoIn(settings),
       emailDomainSignUp: signsUpWithEmailDomainIn(settings),
       emailDomains: emailDomainsIn(settings),
       navigationIcons: navigationIconsIn(settings),
@@ -2682,17 +3876,21 @@ export class WorkspaceStore {
       assistantInstructions: assistantInstructionsIn(settings),
       assistantPromptTemplate: assistantPromptTemplateIn(settings),
       huddles: huddlesIn(settings),
+      sso: ssoIn(settings),
       outsideAi: isPresent(settings?.outside_ai),
       deployedAddress: deployedAddressIn(settings),
       otherAddresses: otherAddressesIn(settings),
+      blockedWords: blockedWordsIn(settings),
     };
   }
 
   /**
    * Changes the workspace's name, tagline, settings, custom domain and the ones it moved away from,
-   * navigation icons, From address, Resend API key, Turnstile's keys, Memberful's, huddles' SFU app and
-   * email domains, as `change` has them, in one batch. Memberful's settings are stored both at once, so that an account
-   * from before `memberful_join` reads as they're saved.
+   * navigation icons, From address, Resend API key, Turnstile's keys, Memberful's, huddles' SFU app, the
+   * single sign-on provider, email domains and blocked words, as `change` has them, in one batch.
+   * Memberful's settings are stored both at once, so that an account from before `memberful_join` reads
+   * as they're saved, and so are single sign-on's. Blocked words aren't recorded as a change, since pages
+   * don't show them, so the logo's address stays as it is.
    */
   async changeAccount(
     {
@@ -2700,6 +3898,8 @@ export class WorkspaceStore {
       tagline,
       hideTranslationButtons,
       restrictRoomCreation,
+      huddleCameras,
+      huddleScreens,
       customDomain,
       otherAddresses,
       joinLink,
@@ -2713,6 +3913,9 @@ export class WorkspaceStore {
       turnstileKeys,
       memberfulKeys,
       huddles,
+      sso,
+      ssoSwitches,
+      blockedWords,
     }: AccountChange,
     now: string,
   ): Promise<void> {
@@ -2721,6 +3924,8 @@ export class WorkspaceStore {
       ...(tagline === undefined ? [] : [statement(SET_TAGLINE, JSON.stringify(tagline), now)]),
       ...(hideTranslationButtons === undefined ? [] : [statement(SET_HIDE_TRANSLATION_BUTTONS, JSON.stringify(hideTranslationButtons), now)]),
       ...(restrictRoomCreation === undefined ? [] : [statement(SET_RESTRICT_ROOM_CREATION, JSON.stringify(restrictRoomCreation), now)]),
+      ...(huddleCameras === undefined ? [] : [statement(SET_HUDDLE_CAMERAS, JSON.stringify(huddleCameras), now)]),
+      ...(huddleScreens === undefined ? [] : [statement(SET_HUDDLE_SCREENS, JSON.stringify(huddleScreens), now)]),
       ...(customDomain === undefined ? [] : [statement(SET_CUSTOM_DOMAIN, JSON.stringify(customDomain), now)]),
       ...(otherAddresses === undefined ? [] : [statement(REMEMBER_OTHER_ADDRESSES, JSON.stringify(otherAddresses))]),
       ...(joinLink === undefined ? [] : [statement(SET_JOIN_LINK, JSON.stringify(joinLink), now)]),
@@ -2737,7 +3942,12 @@ export class WorkspaceStore {
       ...(memberfulKeys === undefined
         ? []
         : [statement(SET_MEMBERFUL_KEYS, JSON.stringify(memberfulKeys && { site: memberfulKeys.site, client_id: memberfulKeys.clientId, secrets: memberfulKeys.sealedSecrets }), now)]),
-      ...(huddles === undefined ? [] : [statement(SET_HUDDLES, JSON.stringify(huddles && { app_id: huddles.appId, app_secret: huddles.sealedAppSecret }), now)]),
+      ...(huddles === undefined ? [] : [statement(SET_HUDDLES, JSON.stringify(huddles && storedHuddles(huddles)), now)]),
+      ...(sso === undefined ? [] : [statement(SET_SSO, JSON.stringify(storedSso(sso)), now)]),
+      ...(ssoSwitches === undefined
+        ? []
+        : [statement(SET_SSO_JOIN, JSON.stringify(ssoSwitches.ssoJoin), now), statement(SET_SSO_SIGN_IN, JSON.stringify(ssoSwitches.ssoSignIn), now)]),
+      ...(blockedWords === undefined ? [] : [statement(REMEMBER_BLOCKED_WORDS, JSON.stringify(blockedWords))]),
     ]);
   }
 
@@ -2764,6 +3974,11 @@ export class WorkspaceStore {
   /** Whether someone is one of the workspace's active administrators, as they are when this asks. */
   async isAdministrator(userId: UserId): Promise<boolean> {
     return (await this.db.all(ACTIVE_ADMINISTRATOR, userId)).length > 0;
+  }
+
+  /** The active administrators' ids. */
+  async administratorIds(): Promise<UserId[]> {
+    return userIdsOf(await this.db.all<UserIdRow>(ACTIVE_ADMINISTRATORS));
   }
 
   /**
@@ -2797,7 +4012,7 @@ export class WorkspaceStore {
       ),
       ...keeping(administrator.avatar),
       ...rooms.flatMap((room) => [statement(INSERT_FIRST_ROOM, room.id, room.name, administrator.id, now), statement(GRANT_FIRST_ROOM, now, now, room.id)]),
-      statement(GRANT_OPEN_ROOMS_TO_USER, administrator.id, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, administrator.id, now, now, administrator.id),
       statement(INSERT_SESSION, sessionId, administrator.id, tokenDigest, client.ip, client.userAgent, now, now, now),
       statement(OPEN_ROOM_NAMED, rooms[0]!.name),
     ]);
@@ -2806,15 +4021,16 @@ export class WorkspaceStore {
 
   /**
    * Adds someone who joined with the join link as a member, with their session, in every open room,
-   * recording who invited them, if they joined with an invitation. Any invitation to their email address
-   * is accepted, and the links to it spent, whichever way they joined. If someone has their email
-   * address already, the address's unique index refuses the first statement, and so the whole batch,
-   * which leaves the links as they were.
+   * recording who invited them, if they joined with an invitation, and starts the DMs `welcomes` lists
+   * to welcome them, answering the ones it started. Any invitation to their email address is accepted,
+   * and the links to it spent, whichever way they joined. If someone has their email address already,
+   * the address's unique index refuses the first statement, and so the whole batch, which leaves the
+   * links as they were.
    */
-  async createMember(person: NewPerson, sessionId: string, tokenDigest: string, client: Client, now: string): Promise<void> {
-    await this.db.batch([
+  async createMember(person: NewPerson, welcomes: Welcome[], sessionId: string, tokenDigest: string, client: Client, now: string): Promise<DirectRoom[]> {
+    const results = await this.db.batch([
       statement(
-        `INSERT INTO users (id, name, email_address, password_digest, avatar_key, avatar_variant, invited_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, name, email_address, password_digest, avatar_key, avatar_variant, invited_by, email_verified_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         person.id,
         person.name,
         person.emailAddress,
@@ -2822,27 +4038,50 @@ export class WorkspaceStore {
         person.avatar?.key ?? null,
         person.avatar?.variant ?? null,
         person.invitedBy ?? null,
+        person.emailVerified ? now : null,
         now,
         now,
       ),
       ...keeping(person.avatar),
       statement(INSERT_SESSION, sessionId, person.id, tokenDigest, client.ip, client.userAgent, now, now, now),
-      statement(GRANT_OPEN_ROOMS_TO_USER, person.id, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, person.id, now, now, person.id),
       statement(SPEND_EMAIL_LINKS, person.emailAddress),
+      ...welcoming(person.id, welcomes, now),
     ]);
+    return welcomedBy(person, welcomes, results.at(-2) as Array<{ id: RoomId }>, now);
   }
 
   /**
-   * Adds someone who signed in with `account`, an account elsewhere, as a member with no password, linked
-   * to it, with their session, in every open room, spending the links to their email address, as
-   * `createMember` adds someone who joins. If someone has their email address already, or the account
-   * is linked to someone already, a unique index refuses its statement, and so the whole batch.
+   * Adds someone who signed in with `account`, an account elsewhere, by `via`, as a member with no
+   * password, linked to it, with their session, in every open room, spending the links to their email
+   * address and starting the DMs `welcomes` lists, as `createMember` adds someone who joins. If someone
+   * has their email address already, or the account is linked to someone already, a unique index refuses
+   * its statement, and so the whole batch.
    */
-  async createLinkedMember(person: NewLinkedPerson, account: LinkedAccount, checkedAt: number, sessionId: string, tokenDigest: string, client: Client, now: string): Promise<void> {
-    await this.db.batch([
-      statement(`INSERT INTO users (id, name, email_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, person.id, person.name, person.emailAddress, now, now),
+  async createLinkedMember(
+    person: NewLinkedPerson,
+    account: LinkedAccount,
+    via: "memberful" | "sso",
+    checkedAt: number,
+    welcomes: Welcome[],
+    sessionId: string,
+    tokenDigest: string,
+    client: Client,
+    now: string,
+    kept: SignInKept,
+  ): Promise<DirectRoom[]> {
+    const results = await this.db.batch([
       statement(
-        `INSERT INTO identities (issuer, subject, user_id, checked_at, created_at, updated_at, name, email_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO users (id, name, username, email_address, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        person.id,
+        person.name,
+        person.username,
+        person.emailAddress,
+        now,
+        now,
+      ),
+      statement(
+        `INSERT INTO identities (issuer, subject, user_id, checked_at, created_at, updated_at, name, email_address, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         account.issuer,
         account.subject,
         person.id,
@@ -2851,40 +4090,208 @@ export class WorkspaceStore {
         now,
         account.name,
         account.emailAddress,
+        via,
       ),
-      statement(INSERT_SESSION, sessionId, person.id, tokenDigest, client.ip, client.userAgent, now, now, now),
-      statement(GRANT_OPEN_ROOMS_TO_USER, person.id, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, person.id, now, now, person.id),
+      ...this.keepingRefresh(account, kept),
+      // The identity-aware insert alone starts the session, since the id it's given is the one this
+      // batch keeps: an INSERT_SESSION ahead of it would put the same id in twice, and sessions.id
+      // being a primary key, roll the whole join back.
+      statement(INSERT_IDENTITY_SESSION, sessionId, person.id, tokenDigest, client.ip, client.userAgent, now, account.issuer, kept.sid),
       statement(SPEND_EMAIL_LINKS, person.emailAddress),
+      ...welcoming(person.id, welcomes, now),
     ]);
+    return welcomedBy(person, welcomes, results.at(-2) as Array<{ id: RoomId }>, now);
   }
 
-  /** The person the account elsewhere that `issuer` and `subject` name is linked to, whatever their status, or null for nobody. */
-  async linkedPerson(issuer: string, subject: string): Promise<LinkedPerson | null> {
-    return (await this.linkedPeople(issuer, [subject])).get(subject) ?? null;
+  /** Everyone already here whom a DM is to welcome someone who joins to (`WELCOMERS`). */
+  async welcomers(): Promise<User[]> {
+    return this.db.all<User>(WELCOMERS);
   }
 
-  /** The people the accounts at `issuer` with `subjects` are linked to, whatever their status, by subject, leaving out those linked to nobody. */
-  async linkedPeople(issuer: string, subjects: string[]): Promise<Map<string, LinkedPerson>> {
-    const rows = await this.db.all<{ subject: string; id: UserId; status: number; membership_needed: number; checked_at: number }>(LINKED_PEOPLE, issuer, JSON.stringify(subjects));
+  /**
+   * The person the account elsewhere that `issuer` and `subject` name is linked to, whatever their status,
+   * or null for nobody, and whether an account of theirs at one of `otherWays` lets them in.
+   */
+  async linkedPerson(issuer: string, subject: string, otherWays: OtherWays): Promise<LinkedPerson | null> {
+    return (await this.linkedPeople(issuer, [subject], otherWays)).get(subject) ?? null;
+  }
+
+  /** The people the accounts at `issuer` with `subjects` are linked to, whatever their status, by subject, leaving out those linked to nobody, as `linkedPerson` finds them. */
+  async linkedPeople(issuer: string, subjects: string[], { checked, refreshed }: OtherWays): Promise<Map<string, LinkedPerson>> {
+    const rows = await this.db.all<{ subject: string; id: UserId; status: number; membership_needed: number; checked_at: number; otherwise_let_in: number }>(
+      LINKED_PEOPLE,
+      issuer,
+      JSON.stringify(subjects),
+      JSON.stringify(checked),
+      JSON.stringify(refreshed),
+    );
     return new Map(
       rows.map((row) => [
         row.subject,
-        { userId: row.id, status: STATUSES[row.status] ?? "active", membershipNeeded: row.membership_needed === 1, checkedAt: row.checked_at },
+        {
+          userId: row.id,
+          status: STATUSES[row.status] ?? "active",
+          membershipNeeded: row.membership_needed === 1,
+          checkedAt: row.checked_at,
+          otherwiseLetIn: row.otherwise_let_in === 1,
+        },
       ]),
     );
   }
 
   /**
    * Starts a session for someone who signed in with `account`, an account elsewhere that's linked to
-   * them, unless they've stopped being active, keeping what the account says of itself now.
+   * them, unless they've stopped being active, keeping what the account says of itself now, and what
+   * `kept` says of the provider's word.
    */
-  async startLinkedSession(userId: UserId, sessionId: string, tokenDigest: string, client: Client, now: string, account: LinkedAccount): Promise<StoredSession | null> {
-    const [, , [row]] = (await this.db.batch([
-      statement(INSERT_LINKED_SESSION, sessionId, tokenDigest, client.ip, client.userAgent, now, userId),
+  async startLinkedSession(
+    userId: UserId,
+    sessionId: string,
+    tokenDigest: string,
+    client: Client,
+    now: string,
+    account: LinkedAccount,
+    kept: SignInKept,
+  ): Promise<StoredSession | null> {
+    const results = await this.db.batch([
+      statement(INSERT_LINKED_SESSION, sessionId, tokenDigest, client.ip, client.userAgent, now, userId, account.issuer, kept.sid),
       statement(REFRESH_IDENTITY, account.issuer, account.subject, account.name, account.emailAddress, now),
+      ...this.keepingRefresh(account, kept),
       statement(SESSION, tokenDigest),
-    ])) as [unknown[], unknown[], SessionRow[]];
+    ]);
+    const [row] = results.at(-1) as SessionRow[];
     return row ? storedSession(row) : null;
+  }
+
+  /**
+   * Starts a session for the guest of one room who signed in by their stay's name, unless they've stopped
+   * being active since, or their stay ended while it was checked, which leaves the session unstarted.
+   */
+  async startGuestSession(userId: UserId, sessionId: string, tokenDigest: string, client: Client, now: string): Promise<StoredSession | null> {
+    const [, [row]] = (await this.db.batch([
+      statement(INSERT_LINKED_SESSION, sessionId, tokenDigest, client.ip, client.userAgent, now, userId, null, null),
+      statement(SESSION, tokenDigest),
+    ])) as [unknown[], SessionRow[]];
+    return row ? storedSession(row) : null;
+  }
+
+  /**
+   * Keeps what `account`, an account elsewhere linked already, says of itself now, and the refresh token
+   * `kept` has, if it has one, as starting a session with it does, for a sign-in that starts none.
+   */
+  async keepLinkedAccount(account: LinkedAccount, kept: SignInKept, now: string): Promise<void> {
+    await this.db.batch([statement(REFRESH_IDENTITY, account.issuer, account.subject, account.name, account.emailAddress, now), ...this.keepingRefresh(account, kept)]);
+  }
+
+  /** The statement that keeps the refresh token `kept` has for `account`, if it has one, to ask the provider with when it's due. */
+  private keepingRefresh(account: LinkedAccount, kept: SignInKept): Statement[] {
+    return kept.refresh ? [statement(KEEP_REFRESH_TOKEN, account.issuer, account.subject, kept.refresh.sealedToken, kept.refresh.dueAt)] : [];
+  }
+
+  /**
+   * Links `account`, at a single sign-on provider, to whoever here has `emailAddress`, which the provider
+   * says it verified, whatever its case, its membership read at `checkedAt`: only if one person does, who
+   * can have an account connected and isn't connected to another there. Answers whom it linked it to.
+   */
+  async linkVerifiedEmail(account: LinkedAccount, emailAddress: string, checkedAt: number, now: string): Promise<UserId | null> {
+    const { issuer, subject, name, emailAddress: shown } = account;
+    const [row] = await this.db.all<{ user_id: UserId }>(LINK_VERIFIED_EMAIL, issuer, subject, checkedAt, now, name, shown, emailAddress);
+    return row?.user_id ?? null;
+  }
+
+  /** The people with sessions a back-channel logout from `issuer` ends (`endLoggedOutSessions`), as it names them. */
+  async loggedOutPeople(issuer: string, loggedOut: LoggedOut): Promise<UserId[]> {
+    const { subject, sid } = loggedOut;
+    const startedBy = new Date(loggedOut.startedBy).toISOString();
+    const rows = await this.db.all<{ user_id: UserId }>(`SELECT DISTINCT sessions.user_id FROM sessions WHERE ${loggedOutBy(loggedOut)}`, issuer, sid, subject, startedBy);
+    if (subject === null || rows.length > 0) return rows.map((row) => row.user_id);
+    // Whoever the account is linked to, though they have no session it signed in, whose cached ones may be.
+    const [linked] = await this.db.all<{ user_id: UserId }>(`SELECT user_id FROM identities WHERE issuer = ? AND subject = ?`, issuer, subject);
+    return linked ? [linked.user_id] : [];
+  }
+
+  /**
+   * Ends the sessions signed in with an account at `issuer` that `loggedOut` names, in one transaction:
+   * queues closing their sockets with `code` in every room their people are in, due at `dueAt`, and
+   * forgets the push subscriptions of anyone it leaves without a session. Answers the sessions it ended,
+   * and whether it queued any revocations.
+   */
+  async endLoggedOutSessions(issuer: string, named: LoggedOut, code: CloseCode, dueAt: number): Promise<LoggedOutSessions> {
+    const loggedOut = loggingOut(loggedOutBy(named));
+    const { subject, sid } = named;
+    const startedBy = new Date(named.startedBy).toISOString();
+    const [queued, , ended] = await this.db.batch([
+      // Before the sessions go, which each finds what it does by.
+      statement(loggedOut.queue, issuer, sid, subject, startedBy, SESSION_TAG_PREFIX, code, dueAt),
+      statement(loggedOut.forgetPushes, issuer, sid, subject, startedBy),
+      statement(loggedOut.end, issuer, sid, subject, startedBy),
+    ]);
+    return { ended: (ended as Array<{ id: string; user_id: UserId }>).map((row) => ({ id: row.id, userId: row.user_id })), queued: queued!.length > 0 };
+  }
+
+  /**
+   * Forgets the refresh tokens of every issuer but `issuer`, the provider's, as nothing asks with them,
+   * and answers up to `limit` of those at `issuer` due by `now`, those due longest first.
+   */
+  async dueRefreshes(issuer: string, now: number, limit: number): Promise<DueRefresh[]> {
+    const [, due] = await this.db.batch([
+      statement(`UPDATE identities SET refresh_token = NULL, refresh_due_at = NULL WHERE refresh_due_at IS NOT NULL AND issuer <> ?`, issuer),
+      statement(
+        `SELECT subject, refresh_token, refresh_failing_since FROM identities WHERE refresh_due_at <= ? AND issuer = ? AND refresh_token IS NOT NULL ORDER BY refresh_due_at LIMIT ?`,
+        now,
+        issuer,
+        limit,
+      ),
+    ]);
+    return (due as Array<{ subject: string; refresh_token: string; refresh_failing_since: number | null }>).map((row) => ({
+      subject: row.subject,
+      sealedToken: row.refresh_token,
+      failingSince: row.refresh_failing_since,
+    }));
+  }
+
+  /**
+   * Puts the refresh token `sealedToken` back for the account at `issuer` with `subject`, due at `dueAt`,
+   * with since when the provider hasn't answered for it, `failingSince`, as acting on settling it failed,
+   * unless a sign-in has kept another since.
+   */
+  async restoreRefresh(issuer: string, subject: string, sealedToken: string, dueAt: number, failingSince: number | null): Promise<void> {
+    await this.db.run(
+      `UPDATE identities SET refresh_token = ?3, refresh_due_at = ?4, refresh_failing_since = ?5 WHERE issuer = ?1 AND subject = ?2 AND refresh_token IS NULL`,
+      issuer,
+      subject,
+      sealedToken,
+      dueAt,
+      failingSince,
+    );
+  }
+
+  /**
+   * Puts off asking with the refresh tokens due by `now` until `until`, keeping them, as while there's no
+   * provider to ask, which may be back, as once a secret that didn't open is set up again.
+   */
+  async putOffRefreshes(now: number, until: number): Promise<void> {
+    await this.db.run(`UPDATE identities SET refresh_due_at = ? WHERE refresh_due_at <= ?`, until, now);
+  }
+
+  /**
+   * Keeps what asking the provider with the refresh token `asked` came to, for the account at `issuer`
+   * with `subject`: the token it gave in its place, sealed, or `asked` again, to ask with at `dueAt`, with
+   * since when it hasn't answered, `failingSince`, if it hasn't, or neither, once it no longer takes it.
+   * Unless a sign-in has kept another since, which stays. Whether it kept it.
+   */
+  async settleRefresh(issuer: string, subject: string, asked: string, next: { sealedToken: string; dueAt: number; failingSince?: number } | null): Promise<boolean> {
+    const settled = await this.db.all(
+      `UPDATE identities SET refresh_token = ?4, refresh_due_at = ?5, refresh_failing_since = ?6 WHERE issuer = ?1 AND subject = ?2 AND refresh_token = ?3 RETURNING subject`,
+      issuer,
+      subject,
+      asked,
+      next?.sealedToken ?? null,
+      next?.dueAt ?? null,
+      next?.failingSince ?? null,
+    );
+    return settled.length > 0;
   }
 
   /**
@@ -2924,29 +4331,43 @@ export class WorkspaceStore {
   }
 
   /**
-   * Links `account`, an account elsewhere, to the person `connecting` is for, its membership read at
-   * `checkedAt`, unless they've stopped being able to have one connected, or their password has changed
-   * since it checked out. Whether it's linked. A unique index refuses it for an account linked to
-   * anyone already, or a second account of theirs at its issuer.
+   * Links `account`, an account elsewhere that signs in by `via`, to the person `connecting` is for, its
+   * membership read at `checkedAt`, unless they've stopped being able to have one connected, or their
+   * password has changed since it checked out. Whether it's linked. A unique index refuses it for an
+   * account linked to anyone already, or a second account of theirs at its issuer.
    */
-  async connectIdentity({ userId, passwordDigest }: Connecting, account: LinkedAccount, checkedAt: number, now: string): Promise<boolean> {
+  async connectIdentity(
+    { userId, passwordDigest }: Connecting,
+    account: LinkedAccount,
+    via: "memberful" | "sso",
+    checkedAt: number,
+    lapsed: boolean,
+    now: string,
+    kept: SignInKept,
+  ): Promise<boolean> {
     const { issuer, subject, name, emailAddress } = account;
-    return (await this.db.all(CONNECT_IDENTITY, issuer, subject, checkedAt, now, userId, passwordDigest, name, emailAddress)).length > 0;
+    const [connected] = await this.db.batch([
+      statement(CONNECT_IDENTITY, issuer, subject, checkedAt, now, userId, passwordDigest, name, emailAddress, lapsed ? 1 : 0, via),
+      ...this.keepingRefresh(account, kept),
+    ]);
+    return connected!.length > 0;
   }
 
   /**
    * Unlinks the account at `issuer` from `userId`, while their password's digest is still
    * `passwordDigest`, as the Worker checked it, and in the same transaction ends the sessions and
    * forgets the push subscriptions `ended` says, queuing closing those sessions' sockets, and forgets
-   * the connections their browsers started and haven't finished, as a new password does. Each
-   * statement checks both, so a password changed meanwhile, or an account disconnected already, changes
-   * nothing. Answers whether it was unlinked, and whether it queued any.
+   * the connections their browsers started and haven't finished, and ends the sign-in links the session
+   * it keeps has shown, as a new password does. Each statement checks both, so a password changed
+   * meanwhile, or an account disconnected already, changes nothing. Answers whether it was unlinked, and
+   * whether it queued any.
    */
   async disconnectIdentity(userId: UserId, issuer: string, passwordDigest: string, ended: EndedByPassword): Promise<Disconnection> {
-    const [queued, , , , unlinked] = await this.db.batch([
+    const [queued, , , , , unlinked] = await this.db.batch([
       // Before their sessions go, which it finds their sockets by, and before the link, which each checks.
       statement(QUEUE_DISCONNECTED_SESSION_REVOCATIONS, userId, issuer, passwordDigest, SESSION_TAG_PREFIX, ended.code, ended.dueAt, ended.kept),
       statement(`DELETE FROM sessions WHERE user_id = ?1 AND id <> ?4 AND ${DISCONNECTING}`, userId, issuer, passwordDigest, ended.kept),
+      statement(`UPDATE sessions SET transfers_since = ?5 WHERE id = ?4 AND ${DISCONNECTING}`, userId, issuer, passwordDigest, ended.kept, ended.dueAt),
       statement(`DELETE FROM push_subscriptions WHERE user_id = ?1 AND endpoint IS NOT ?4 AND ${DISCONNECTING}`, userId, issuer, passwordDigest, ended.pushEndpoint),
       statement(`DELETE FROM pending_identities WHERE user_id = ?1 AND ${DISCONNECTING}`, userId, issuer, passwordDigest),
       statement(DISCONNECT_IDENTITY, userId, issuer, passwordDigest),
@@ -2959,9 +4380,12 @@ export class WorkspaceStore {
     return (await this.db.all(`SELECT 1 FROM identities WHERE issuer = ? LIMIT 1`, issuer)).length > 0;
   }
 
-  /** A Memberful site anyone here, whatever their status, has an account at linked to them, the first if there are several, or null while nobody has. */
+  /**
+   * A Memberful site anyone here, whatever their status, has an account at linked to them, the first if
+   * there are several, or null while nobody has. A single sign-on provider's issuer never is one.
+   */
   async linkedSite(): Promise<string | null> {
-    const [linked] = await this.db.all<{ issuer: string }>(`SELECT issuer FROM identities LIMIT 1`);
+    const [linked] = await this.db.all<{ issuer: string }>(`SELECT issuer FROM identities WHERE via = 'memberful' LIMIT 1`);
     return linked?.issuer ?? null;
   }
 
@@ -3068,10 +4492,12 @@ export class WorkspaceStore {
   /**
    * Counts a try of the code to reset a password that works, at `now`, for the active person whose email
    * address is exactly `emailAddress`, while it has tries left, answering its digest to check the code
-   * tried against, or null while no code works for them, whoever they are.
+   * tried against, or null while no code works for them, whoever they are. Either way it changes what's
+   * stored (`passingChange`), so that how soon it answers doesn't say which.
    */
   async tryPasswordReset(emailAddress: string, now: string): Promise<string | null> {
-    const [row] = await this.db.all<{ code_digest: string }>(TRY_PASSWORD_RESET, emailAddress, now, PASSWORD_RESET_CODE_TRIES);
+    const results = await this.db.batch([...passingChange(), statement(TRY_PASSWORD_RESET, emailAddress, now, PASSWORD_RESET_CODE_TRIES)]);
+    const [row] = results.at(-1) as Array<{ code_digest: string }>;
     return row?.code_digest ?? null;
   }
 
@@ -3101,8 +4527,141 @@ export class WorkspaceStore {
     await this.db.batch([
       statement(`INSERT INTO users (id, name, guest, created_at, updated_at) VALUES (?, ?, 1, ?, ?)`, user.id, user.name, now, now),
       statement(INSERT_SESSION, sessionId, user.id, tokenDigest, client.ip, client.userAgent, now, now, now),
-      statement(GRANT_OPEN_ROOMS_TO_USER, user.id, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, user.id, now, now, user.id),
     ]);
+  }
+
+  /**
+   * Adds a guest of room `roomId`, whose stay ends at `untilAt`, in one transaction: the person, who has
+   * a name but no way to sign in with a password, their one membership, and the stay that ends their
+   * access, which the alarm lapses once its time has passed.
+   */
+  async addGuest(user: User, roomId: RoomId, untilAt: number, now: string): Promise<void> {
+    await this.db.batch([
+      statement(`INSERT INTO users (id, name, guest, created_at, updated_at) VALUES (?, ?, 1, ?, ?)`, user.id, user.name, now, now),
+      statement(`INSERT INTO memberships (room_id, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)`, roomId, user.id, now, now),
+      statement(`INSERT INTO guest_stays (user_id, room_id, until_at) VALUES (?, ?, ?)`, user.id, roomId, untilAt),
+    ]);
+  }
+
+  /** The stay of the guest `userId`, with the room it reaches and when it ends, or null while they have none. */
+  async guestStayOf(userId: UserId): Promise<{ roomId: RoomId; untilAt: number } | null> {
+    const [row] = await this.db.all<{ room_id: RoomId; until_at: number }>(`SELECT room_id, until_at FROM guest_stays WHERE user_id = ?`, userId);
+    return row ? { roomId: row.room_id, untilAt: row.until_at } : null;
+  }
+
+  /** Which of the people `userIds` names the stay of a guest of one room holds, as starting a DM refuses them. */
+  async heldByStays(userIds: UserId[]): Promise<UserId[]> {
+    if (userIds.length === 0) return [];
+    const rows = await this.db.all<{ user_id: UserId }>(
+      `SELECT guest_stays.user_id FROM guest_stays WHERE guest_stays.user_id IN (SELECT value FROM json_each(?))`,
+      JSON.stringify(userIds),
+    );
+    return rows.map((row) => row.user_id);
+  }
+
+  /**
+   * The guests of one room a listing of `userId` may not reach, as announcing them holds it from them:
+   * whose stay has passed already, whose tab the outbox closes though they may be reading still, and
+   * whose live stay holds them to a room that doesn't have `userId` in it, since what happens outside
+   * a guest's room is none of theirs to hear, names of people included.
+   */
+  async stayGuestsBeyond(userId: UserId, now: number): Promise<UserId[]> {
+    const rows = await this.db.all<{ user_id: UserId }>(
+      `SELECT guest_stays.user_id FROM guest_stays JOIN users ON users.id = guest_stays.user_id
+       WHERE users.status = ${ACTIVE} AND guest_stays.user_id <> ?
+         AND (guest_stays.until_at <= ?
+           OR NOT EXISTS (SELECT 1 FROM memberships WHERE memberships.room_id = guest_stays.room_id AND memberships.user_id = ?))`,
+      userId,
+      now,
+      userId,
+    );
+    return rows.map((row) => row.user_id);
+  }
+
+  /**
+   * The guests of one room who may still sign in by their stay's name: those active whose stays haven't
+   * ended yet, with their names, for matching the name the sign-in form gives (`sameName` compares those).
+   */
+  async unexpiredGuestStays(now: number): Promise<Array<{ userId: UserId; name: string }>> {
+    return this.db.all(
+      `SELECT guest_stays.user_id AS userId, users.name FROM guest_stays JOIN users ON users.id = guest_stays.user_id
+       WHERE guest_stays.until_at > ? AND users.status = ${ACTIVE}`,
+      now,
+    );
+  }
+
+  /**
+   * Raises the stay of guest `userId` in room `roomId` to end at `untilAt`, answering whether it did:
+   * a stay whose time has passed is none to raise, since its name has been another guest's to take
+   * already, and raising it would sign one of them in as the other; and a stay of someone whose person
+   * was removed, banned or suspended stays as it is, since extending it wouldn't let them back in.
+   */
+  async extendGuestStay(userId: UserId, roomId: RoomId, untilAt: number, now: number): Promise<boolean> {
+    const [row] = await this.db.all(
+      `UPDATE guest_stays SET until_at = ?3 WHERE user_id = ?1 AND room_id = ?2
+       AND guest_stays.until_at > ?4
+       AND EXISTS (SELECT 1 FROM users WHERE users.id = guest_stays.user_id AND users.status = ${ACTIVE})
+       RETURNING user_id`,
+      userId,
+      roomId,
+      untilAt,
+      now,
+    );
+    return row !== undefined;
+  }
+
+  /** The guests of one room whose stays have ended and who are still active, oldest first, at most `most` of them. */
+  async lapsedGuestStays(now: number, most: number): Promise<UserId[]> {
+    const rows = await this.db.all<{ user_id: UserId }>(
+      `SELECT guest_stays.user_id FROM guest_stays JOIN users ON users.id = guest_stays.user_id
+       WHERE guest_stays.until_at <= ? AND users.status = ${ACTIVE} ORDER BY guest_stays.until_at LIMIT ?`,
+      now,
+      most,
+    );
+    return rows.map(({ user_id }) => user_id);
+  }
+
+  /**
+   * Lapses the stay of guest `userId`, whose time has passed, in one transaction: queues closing their
+   * sockets with `code` in every room they're in, due at `dueAt`, ends their sessions, and forgets their
+   * recent searches and push subscriptions, as removing them forgets them, and marks them deactivated,
+   * whose row it keeps, as it keeps a removed person's. Their membership and stay stay, so an
+   * administrator can still tell who they were, and nothing here answers for them again, since they're
+   * no longer active to find. Answers whether it queued anything.
+   */
+  async lapseGuestStay(userId: UserId, code: CloseCode, dueAt: number, now: string): Promise<boolean> {
+    const [queued] = await this.db.batch([
+      ...lapsedStayStatements(userId, code, dueAt, now),
+      // A stay of a person who was removed, banned or suspended already changes nothing.
+      statement(`UPDATE users SET status = ${DEACTIVATED}, updated_at = ? WHERE id = ? AND status = ${ACTIVE}`, now, userId),
+    ]);
+    return queued!.length > 0;
+  }
+
+  /**
+   * Ends the stay of guest `userId` in room `roomId` now, lapsing it as `lapseGuestStay` lapses one
+   * whose time has passed, and keeping the stay with `endedAt` in place of its time, that pruning may
+   * one day take the row. Answers whether it queued anything.
+   */
+  async endGuestStay(userId: UserId, roomId: RoomId, endedAt: number, code: CloseCode, dueAt: number, now: string): Promise<boolean> {
+    const [queued] = await this.db.batch([
+      ...lapsedStayStatements(userId, code, dueAt, now),
+      statement(`UPDATE guest_stays SET until_at = ? WHERE user_id = ? AND room_id = ?`, endedAt, userId, roomId),
+      // A stay of a person who was removed, banned or suspended already changes nothing.
+      statement(`UPDATE users SET status = ${DEACTIVATED}, updated_at = ? WHERE id = ? AND status = ${ACTIVE}`, now, userId),
+    ]);
+    return queued!.length > 0;
+  }
+
+  /** The active people in room `roomId`, as the people directory lists them, for the directory of a guest of one room. */
+  async roomPeople(roomId: RoomId): Promise<DirectoryEntry[]> {
+    const rows = await this.db.all<DirectoryRow>(
+      `SELECT ${DIRECTORY_COLUMNS} FROM memberships JOIN users ON users.id = memberships.user_id
+       WHERE memberships.room_id = ? AND users.status = ${ACTIVE} ORDER BY lower(users.name), users.id`,
+      roomId,
+    );
+    return rows.map(directoryEntry);
   }
 
   /** The session a token's digest names, if its person is still active. */
@@ -3116,11 +4675,16 @@ export class WorkspaceStore {
    * without a password never sign in with one.
    */
   async passwordFor(emailAddress: string): Promise<{ userId: UserId; passwordDigest: string } | null> {
-    const [row] = await this.db.all<{ id: UserId; password_digest: string }>(
-      `SELECT id, password_digest FROM users WHERE email_address = ? AND status = ${ACTIVE} AND password_digest <> ''`,
-      emailAddress,
-    );
-    return row ? { userId: row.id, passwordDigest: row.password_digest } : null;
+    return passwordIn(await this.db.all<PasswordRow>(PASSWORD_FOR, emailAddress));
+  }
+
+  /**
+   * The person `passwordFor` finds, for someone asking to reset their password, which changes what's
+   * stored whether or not there is one (`passingChange`), so that how soon it answers doesn't say which.
+   */
+  async passwordToReset(emailAddress: string): Promise<{ userId: UserId; passwordDigest: string } | null> {
+    const results = await this.db.batch([...passingChange(), statement(PASSWORD_FOR, emailAddress)]);
+    return passwordIn(results.at(-1) as PasswordRow[]);
   }
 
   /**
@@ -3150,12 +4714,18 @@ export class WorkspaceStore {
 
   /**
    * Starts a session for someone who opened a sign-in link for them that the session `shownBy` showed,
-   * unless they're no longer active, or are a guest while `guests` says guests can't stay signed in, or
-   * that session has ended or is neither theirs nor an active administrator's.
+   * unless they're no longer active, or are a guest while `guests` says guests can't stay signed in and
+   * no stay of a guest of one room still holds them, or that session has ended or is neither theirs nor
+   * an active administrator's.
+   * Starts a session for someone who opened a sign-in link for them that the session `shownBy` showed
+   * at `shownAt`, unless they're no longer active, or are a guest while `guests` says guests can't stay
+   * signed in, or that session has ended, has ended the links it showed until then, or is neither theirs
+   * nor an active administrator's.
    */
   async startTransferredSession(
     userId: UserId,
     shownBy: string,
+    shownAt: number,
     guests: boolean,
     sessionId: string,
     tokenDigest: string,
@@ -3163,7 +4733,7 @@ export class WorkspaceStore {
     now: string,
   ): Promise<StoredSession | null> {
     const [, [row]] = (await this.db.batch([
-      statement(INSERT_TRANSFERRED_SESSION, sessionId, tokenDigest, client.ip, client.userAgent, now, userId, guests ? 1 : 0, shownBy),
+      statement(INSERT_TRANSFERRED_SESSION, sessionId, tokenDigest, client.ip, client.userAgent, now, userId, guests ? 1 : 0, shownBy, shownAt, Date.now()),
       statement(SESSION, tokenDigest),
     ])) as [unknown[], SessionRow[]];
     return row ? storedSession(row) : null;
@@ -3245,26 +4815,76 @@ export class WorkspaceStore {
       statement(`DELETE FROM own_app_sign_ins WHERE user_id = ?`, userId),
       statement(`DELETE FROM outside_spent_tokens WHERE connection_id IN (SELECT id FROM outside_connections WHERE user_id = ?)`, userId),
       statement(`DELETE FROM outside_connections WHERE user_id = ?`, userId),
+      // A bot's commands, shortcuts and subscriptions go with it, as its being one of the workspace's does.
+      statement(`DELETE FROM commands WHERE bot_id = ?`, userId),
+      statement(`DELETE FROM shortcuts WHERE bot_id = ?`, userId),
+      statement(`DELETE FROM bot_subscriptions WHERE user_id = ?`, userId),
       statement(DEACTIVATE, `-deactivated-${uuid}@`, now, userId),
     ]);
     return queued!.length > 0;
   }
 
   /**
+   * Deletes someone's account, in one transaction: queues closing their sockets with `code` in every
+   * room they're in, DMs included, turning away whatever was let through as them before, and deleting
+   * their messages and boosts in every room they can have written in, all due at `dueAt`, then forgets
+   * everything of theirs that removing them does, and the rooms they starred, the people they blocked and
+   * who blocked them, the accounts elsewhere they connected, the sign-ins they were making to apps and any
+   * code they were emailed to reset their password, and what the reports of them kept of them, and queues
+   * R2 deleting their avatar, `avatar`, if they have one, due then too. Their row stays, as `DELETE_ACCOUNT`
+   * leaves it, recording when, `now`, and so do their DMs, which name them, and the reports of them, as
+   * `CLEAR_REPORTS_OF` leaves them. Answers whether it queued any revocations or purges, whom everyone
+   * who had blocked them has blocked now, and whether any report was of them.
+   */
+  async deleteAccount(userId: UserId, avatar: string | null, code: CloseCode, dueAt: number, now: string): Promise<DeletedAccount> {
+    const [revocations, purges, counted, blocked, cleared] = (await this.db.batch([
+      // Before they leave the rooms, which it finds their sockets in.
+      statement(QUEUE_PERSON_REVOCATIONS, code, dueAt, userId),
+      statement(QUEUE_PURGES, userId, dueAt),
+      // Before the blocks go, which it finds who blocked them by.
+      statement(COUNT_BLOCKERS_CHANGE, userId),
+      statement(BLOCKED_BY_BLOCKERS, userId),
+      statement(CLEAR_REPORTS_OF, DELETED_PERSON_NAME, userId),
+      statement(LEAVE_SHARED_ROOMS, userId),
+      statement(`DELETE FROM sessions WHERE user_id = ?`, userId),
+      ...forgettingSearches(userId),
+      statement(`DELETE FROM push_subscriptions WHERE user_id = ?`, userId),
+      statement(`DELETE FROM favorites WHERE user_id = ?`, userId),
+      statement(`DELETE FROM profile_field_values WHERE user_id = ?`, userId),
+      statement(`DELETE FROM blocks WHERE user_id = ?1 OR blocked_id = ?1`, userId),
+      statement(`DELETE FROM identities WHERE user_id = ?`, userId),
+      statement(`DELETE FROM pending_identities WHERE user_id = ?`, userId),
+      statement(`DELETE FROM password_resets WHERE user_id = ?`, userId),
+      statement(`DELETE FROM app_sign_ins WHERE user_id = ?`, userId),
+      statement(`DELETE FROM own_app_sign_ins WHERE user_id = ?`, userId),
+      statement(`DELETE FROM outside_spent_tokens WHERE connection_id IN (SELECT id FROM outside_connections WHERE user_id = ?)`, userId),
+      statement(`DELETE FROM outside_connections WHERE user_id = ?`, userId),
+      ...(avatar ? [statement(QUEUE_PICTURE_DELETION, avatar, dueAt)] : []),
+      statement(DELETE_ACCOUNT, DELETED_PERSON_NAME, now, userId),
+    ])) as [unknown[], unknown[], Array<{ id: UserId; version: number }>, Array<BlockedRow & { user_id: UserId }>, unknown[], ...unknown[][]];
+    const blockedBy = Map.groupBy(blocked, (row) => row.user_id);
+    return {
+      queued: revocations.length > 0 || purges.length > 0,
+      blockers: counted.map(({ id, version }) => ({ userId: id, blocks: { userIds: (blockedBy.get(id) ?? []).map((row) => row.blocked_id), version } })),
+      reportsCleared: cleared.length > 0,
+    };
+  }
+
+  /**
    * Bans someone, in one transaction: queues closing each of their sessions' sockets with `code` in
    * every room they're in, due at `dueAt`, blocks each of `ipAddresses`, ends their sessions, marks them
    * banned, recording when, unless they were already, and queues deleting their messages in every room
-   * they can have written in, due then too. It queues having every room tell the sockets from those
-   * addresses to reconnect, due then as well, so they come back able only to read, and forgets the
-   * sign-ins they made to apps and the AI apps connected as them. Their memberships, role and avatar
-   * stay. Answers whether it queued anything.
+   * they can have written in, due then too. It queues having the rooms that can hold anyone else's
+   * sockets from those addresses tell them to reconnect, due then as well, so they come back able only
+   * to read, and forgets the sign-ins they made to apps and the AI apps connected as them. Their
+   * memberships, role and avatar stay. Answers whether it queued anything.
    */
   async banPerson(userId: UserId, ipAddresses: string[], code: CloseCode, reconnect: CloseCode, dueAt: number, now: string): Promise<boolean> {
     const [revocations, , reconnections, , , purges] = (await this.db.batch([
       // Before their sessions go, which it finds their sockets by.
       statement(QUEUE_PERSON_SESSION_REVOCATIONS, SESSION_TAG_PREFIX, code, dueAt, userId),
       statement(`INSERT INTO bans (user_id, ip_address, created_at, updated_at) SELECT ?, value, ?, ? FROM json_each(?)`, userId, now, now, JSON.stringify(ipAddresses)),
-      statement(QUEUE_ADDRESS_REVOCATIONS, ADDRESS_TAG_PREFIX, reconnect, dueAt, JSON.stringify(ipAddresses)),
+      statement(QUEUE_ADDRESS_REVOCATIONS, ADDRESS_TAG_PREFIX, reconnect, dueAt, JSON.stringify(ipAddresses), userId),
       statement(`DELETE FROM sessions WHERE user_id = ?`, userId),
       statement(`UPDATE users SET status = ${BANNED}, updated_at = ? WHERE id = ? AND status <> ${BANNED}`, now, userId),
       statement(QUEUE_PURGES, userId, dueAt),
@@ -3278,10 +4898,11 @@ export class WorkspaceStore {
   /**
    * Lifts someone's ban: unblocks their IP addresses and makes them active, recording when, unless they
    * were already, whatever their status was, and puts them in every open room, as joining does, those
-   * made or opened while they were banned among them. The rooms yet to delete their messages delete
-   * only those written by then, at once. It queues having every room tell the sockets from those
-   * addresses to reconnect, due at `dueAt`, so they come back able to change things again, unless
-   * another ban blocks them too. Answers whether it queued anything.
+   * made or opened while they were banned among them, unless they're a chat bot kept to the open rooms
+   * picked, whose rooms kept it while it was banned. The rooms yet to delete their messages delete
+   * only those written by then, at once. It queues having the rooms that can hold sockets from those
+   * addresses tell them to reconnect, due at `dueAt`, so they come back able to change things again,
+   * unless another ban blocks them too. Answers whether it queued anything.
    */
   async unbanPerson(userId: UserId, reconnect: CloseCode, dueAt: number, now: string): Promise<boolean> {
     const [reconnections] = (await this.db.batch([
@@ -3289,7 +4910,8 @@ export class WorkspaceStore {
       statement(QUEUE_UNBANNED_ADDRESS_REVOCATIONS, ADDRESS_TAG_PREFIX, reconnect, dueAt, userId),
       statement(`DELETE FROM bans WHERE user_id = ?`, userId),
       statement(`UPDATE users SET status = ${ACTIVE}, updated_at = ? WHERE id = ? AND status <> ${ACTIVE}`, now, userId),
-      statement(GRANT_OPEN_ROOMS_TO_USER, userId, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, userId, now, now, userId),
+      statement(GRANT_OPEN_ROOMS_TO_UNBANNED, userId, now),
       // The outbox holds a row only until its room answers, so this reads it all rather than keep an index.
       statement(`UPDATE pending_purges SET lifted_at = ? WHERE user_id = ? AND lifted_at IS NULL`, now, userId),
     ])) as unknown[][];
@@ -3311,7 +4933,7 @@ export class WorkspaceStore {
       statement(`DELETE FROM sessions WHERE user_id = ?`, userId),
       statement(`DELETE FROM push_subscriptions WHERE user_id = ?`, userId),
       statement(`UPDATE users SET status = ${SUSPENDED}, updated_at = ? WHERE id = ? AND status = ${ACTIVE}`, now, userId),
-      statement(STAMP_MEMBERSHIPS, issuer, JSON.stringify([subject]), readAt),
+      statement(STAMP_MEMBERSHIPS, issuer, JSON.stringify([subject]), readAt, 1),
     ]);
     return queued!.length > 0;
   }
@@ -3325,14 +4947,14 @@ export class WorkspaceStore {
   async restorePerson(userId: UserId, issuer: string, subject: string, readAt: number, now: string): Promise<void> {
     await this.db.batch([
       statement(`UPDATE users SET status = ${ACTIVE}, updated_at = ? WHERE id = ? AND status = ${SUSPENDED}`, now, userId),
-      statement(GRANT_OPEN_ROOMS_TO_USER, userId, now, now),
-      statement(STAMP_MEMBERSHIPS, issuer, JSON.stringify([subject]), readAt),
+      statement(GRANT_OPEN_ROOMS_TO_USER, userId, now, now, userId),
+      statement(STAMP_MEMBERSHIPS, issuer, JSON.stringify([subject]), readAt, 0),
     ]);
   }
 
-  /** Records that the memberships of the accounts at the Memberful site `issuer` with `subjects` were read at `readAt`, unless they were since. */
-  async stampMemberships(issuer: string, subjects: string[], readAt: number): Promise<void> {
-    if (subjects.length > 0) await this.db.run(STAMP_MEMBERSHIPS, issuer, JSON.stringify(subjects), readAt);
+  /** Records that the memberships of the accounts at `issuer` with `subjects` were read at `readAt`, lapsed or not, unless they were since. */
+  async stampMemberships(issuer: string, subjects: string[], readAt: number, lapsed: boolean): Promise<void> {
+    if (subjects.length > 0) await this.db.run(STAMP_MEMBERSHIPS, issuer, JSON.stringify(subjects), readAt, lapsed ? 1 : 0);
   }
 
   /** Every IP address a ban blocks. */
@@ -3347,7 +4969,7 @@ export class WorkspaceStore {
 
   /** Up to `limit` of the purges due by `now` whose rooms have no sockets left to close, those due longest first. */
   async duePurges(now: number, limit: number): Promise<PendingPurge[]> {
-    return this.db.all<PendingPurge>(DUE_PURGES, now, limit);
+    return (await this.db.all<PendingPurgeRow>(DUE_PURGES, now, limit)).map((row) => ({ ...row, deletedAccount: row.deletedAccount === 1 }));
   }
 
   /**
@@ -3490,16 +5112,22 @@ export class WorkspaceStore {
   }
 
   /**
-   * When the outbox's next revocation, purge, reindex, picture deletion or membership check is due, if
-   * any is waiting, leaving out the purges waiting on their rooms' revocations, which are due no sooner.
+   * When the outbox's next revocation, purge, reindex, picture deletion, membership check, refresh,
+   * reminder or guest stay is due, if any is waiting, leaving out the purges waiting on their rooms'
+   * revocations, which are due no sooner.
    */
+
   async nextDeliveryDue(): Promise<number | null> {
-    const [row] = await this.db.all<{ revocation: number | null; purge: number | null; reindex: number | null; picture: number | null; membership: number | null; catchUp: number | null }>(
+    const [row] = await this.db.all<{ revocation: number | null; purge: number | null; reindex: number | null; picture: number | null; membership: number | null; catchUp: number | null; refresh: number | null; reminder: number | null; stay: number | null }>(
       `SELECT (SELECT min(due_at) FROM pending_revocations) AS revocation, (${NEXT_PURGE_DUE}) AS purge, (SELECT min(due_at) FROM pending_reindexes) AS reindex,
         (SELECT min(due_at) FROM pending_picture_deletions) AS picture, (SELECT min(due_at) FROM membership_checks) AS membership,
-        (SELECT min(due_at) FROM membership_catch_ups) AS catchUp`,
+        (SELECT min(due_at) FROM membership_catch_ups) AS catchUp, (SELECT min(refresh_due_at) FROM identities) AS refresh,
+        (SELECT min(CASE WHEN reminded_at IS NULL OR push_tried_at IS NULL THEN remind_at ELSE push_tried_at + ? END)
+          FROM reminders WHERE reminded_at IS NULL OR pushed_at IS NULL) AS reminder,
+        (SELECT min(guest_stays.until_at) FROM guest_stays JOIN users ON users.id = guest_stays.user_id AND users.status = ${ACTIVE}) AS stay`,
+      REMINDER_PUSH_RETRY_MS,
     );
-    const due = [row?.revocation, row?.purge, row?.reindex, row?.picture, row?.membership, row?.catchUp].filter((time) => typeof time === "number");
+    const due = [row?.revocation, row?.purge, row?.reindex, row?.picture, row?.membership, row?.catchUp, row?.refresh, row?.reminder, row?.stay].filter((time) => typeof time === "number");
     return due.length > 0 ? Math.min(...due) : null;
   }
 
@@ -3573,19 +5201,21 @@ export class WorkspaceStore {
 
   /**
    * The rooms someone is in, with their unread marks and the people in their DMs, the ones they've
-   * starred, the people their sidebar suggests for DMs, the huddles going on in their rooms, and the
-   * workspace's first room, if there is one yet and they're given the welcome card: an active
-   * administrator who hasn't dismissed it.
+   * starred, the huddles going on in their rooms, whom they've blocked, the workspace's first room, if
+   * there is one yet and they're given the welcome card: an active administrator who hasn't dismissed it,
+   * and how many open reports they see, if they're an active administrator.
    */
   async roomsFor(userId: UserId): Promise<SidebarRooms> {
-    const [rows, [original], starred, [user], members, suggested] = (await this.db.batch([
+    const [rows, [original], starred, [user], members, blocked, [reports], suggested] = (await this.db.batch([
       statement(ROOMS_FOR_USER, userId),
       statement(ORIGINAL_ROOM),
       statement(FAVORITES_FOR_USER, userId),
       statement(SIDEBAR_USER, userId),
       statement(DIRECT_MEMBERS_FOR_USER, userId),
+      statement(BLOCKED_BY_USER, userId),
+      statement(OPEN_REPORTS_OF_ADMINISTRATOR, userId),
       statement(SUGGESTED_FOR_USER, userId),
-    ])) as [SidebarRow[], Array<{ id: RoomId }>, Array<{ room_id: RoomId }>, Array<{ version: number; invited: number }>, DirectMemberRow[], User[]];
+    ])) as [SidebarRow[], Array<{ id: RoomId }>, Array<{ room_id: RoomId }>, SidebarUserRow[], DirectMemberRow[], BlockedRow[], Array<{ open: number }>, User[]];
     const membersByRoom = Map.groupBy(members, (member) => member.room_id);
     const peopleInDirects = new Set(members.map((member) => member.id)).size;
     return {
@@ -3594,8 +5224,44 @@ export class WorkspaceStore {
       sharedOrder: sharedOrderOf(rows),
       suggestions: suggested.slice(0, suggestedCount(peopleInDirects)),
       huddles: liveHuddlesIn(rows),
+      blocks: { userIds: blocked.map((row) => row.blocked_id), version: user?.blocks_version ?? 0 },
+      huddleSounds: user ? huddleSoundsOf(user) : ALL_HUDDLE_SOUNDS,
       invitationRoomId: user?.invited === 1 ? (original?.id ?? null) : null,
+      openReports: reports?.open ?? null,
     };
+  }
+
+  /**
+   * Has `userId` block `blockedId` as of `now`, in one transaction, hiding their DM with them alone from
+   * their sidebar, unless it's hidden already, and keeping its level for unblocking to give back. Answers
+   * whom they've blocked now, and the DM, when it hid it. Blocking someone again changes nothing, and
+   * nobody can block themselves.
+   */
+  async block(userId: UserId, blockedId: UserId, now: string): Promise<ChangedBlocks> {
+    const key = directKey([userId, blockedId]);
+    const [, hidden, [counted], blocked] = (await this.db.batch([
+      statement(BLOCK, userId, blockedId, key, now),
+      statement(HIDE_BLOCKED_DIRECT, userId, key, blockedId, now),
+      statement(COUNT_BLOCKS_CHANGE, userId),
+      statement(BLOCKED_BY_USER, userId),
+    ])) as [unknown[], DirectLevelRow[], Array<{ version: number }>, BlockedRow[]];
+    return blocksChange(blocked, counted, hidden);
+  }
+
+  /**
+   * Has `userId` unblock `blockedId`, in one transaction, giving their DM with them alone the level it
+   * had before blocking hid it, if it's hidden still. Answers whom they've blocked now, and the DM, when
+   * it showed it again.
+   */
+  async unblock(userId: UserId, blockedId: UserId): Promise<ChangedBlocks> {
+    const key = directKey([userId, blockedId]);
+    const [shown, , [counted], blocked] = (await this.db.batch([
+      statement(SHOW_UNBLOCKED_DIRECT, userId, key, blockedId),
+      statement(`DELETE FROM blocks WHERE user_id = ? AND blocked_id = ?`, userId, blockedId),
+      statement(COUNT_BLOCKS_CHANGE, userId),
+      statement(BLOCKED_BY_USER, userId),
+    ])) as [DirectLevelRow[], unknown[], Array<{ version: number }>, BlockedRow[]];
+    return blocksChange(blocked, counted, shown);
   }
 
   /**
@@ -3615,10 +5281,64 @@ export class WorkspaceStore {
     return { memberIds: changed.length > 0 ? userIdsOf(members) : null, outdatedBy: null };
   }
 
+  /**
+   * Who of `userIds` an invitation into room `roomId`'s huddle by `by` reaches: those in the room who
+   * hear its @mentions of them or more and haven't blocked `by`.
+   */
+  async huddleInvitees(roomId: RoomId, by: UserId, userIds: UserId[]): Promise<UserId[]> {
+    return userIdsOf(await this.db.all<UserIdRow>(HUDDLE_INVITEES, roomId, JSON.stringify(userIds), by));
+  }
+
+  /**
+   * The pushes of an invitation into room `roomId`'s huddle by `by`, to those of `userIds` it reaches
+   * who have saved a subscription, and to guests only if `guests` says they can stay signed in.
+   */
+  async invitationPushes(roomId: RoomId, by: UserId, userIds: UserId[], guests: boolean): Promise<InvitationPush[]> {
+    return invitationPushes(roomId, await this.db.all<InvitationPushRow>(INVITATION_PUSHES, roomId, by, JSON.stringify(userIds), guests ? 1 : 0));
+  }
+
   /** The huddle going on in a room, or null when none is. */
   async liveHuddle(roomId: RoomId): Promise<LiveHuddle | null> {
     const [row] = await this.db.all<HuddleRow>(HUDDLE, roomId);
     return row ? liveHuddleOf(row) : null;
+  }
+
+  /** Whether a room's settings allow huddles in it, which those of a room the Workspace doesn't know do. */
+  async roomAllowsHuddles(roomId: RoomId): Promise<boolean> {
+    const [row] = await this.db.all<HuddlesAllowedRow>(HUDDLES_ALLOWED, roomId);
+    return !row || allowsHuddles(row);
+  }
+
+  /**
+   * Brings the list of the huddles that are over in step with what room `roomId` says of its huddles'
+   * messages, in one transaction: each one the list has (`isListed`) is listed as it is now, and any
+   * other goes from it. Answers who's in the room, to hear of it, when that changed what's listed, and
+   * null when it didn't, as when the room says again what it said. A room that's gone lists nothing.
+   */
+  async applyHuddleChanges(roomId: RoomId, changes: HuddleChange[]): Promise<UserId[] | null> {
+    const listed = changes.filter(isListed).map(({ messageId, over, replies }) => ({ messageId, ...over, replies }));
+    const unlisted = changes.filter((change) => !isListed(change)).map(({ messageId }) => messageId);
+    const [added, removed, members] = (await this.db.batch([
+      statement(LIST_HUDDLES, roomId, JSON.stringify(listed)),
+      statement(UNLIST_HUDDLES, roomId, JSON.stringify(unlisted)),
+      statement(ROOM_MEMBERS, roomId),
+    ])) as [unknown[], unknown[], UserIdRow[]];
+    return added.length + removed.length > 0 ? userIdsOf(members) : null;
+  }
+
+  /** The huddles that are over in the rooms someone is in and hasn't hidden, the latest to have started first, as many as the Huddles page lists. */
+  async pastHuddles(userId: UserId): Promise<PastHuddle[]> {
+    const rows = await this.db.all<PastHuddleRow>(PAST_HUDDLES_FOR_USER, userId, PAST_HUDDLES_LISTED);
+    return rows.map((row) => ({ ...row, userIds: JSON.parse(row.userIds) as UserId[] }));
+  }
+
+  /**
+   * Turns each of a huddle's sounds that `changes` names on or off for someone, the rest staying as they
+   * are, answering which they hear then, or null for nobody, or someone who has deleted their account.
+   */
+  async setHuddleSounds(userId: UserId, changes: HuddleSoundChanges): Promise<HuddleSounds | null> {
+    const [row] = await this.db.all<HuddleSoundsRow>(SET_HUDDLE_SOUNDS, userId, turned(changes.music), turned(changes.chimes), turned(changes.ring));
+    return row ? huddleSoundsOf(row) : null;
   }
 
   /** Records that someone has dismissed the welcome card, at `now`, unless they had already. */
@@ -3711,15 +5431,16 @@ export class WorkspaceStore {
   /**
    * Applies `events` from room `roomId`'s log, in order and in one transaction, with `viewerIds`, who
    * is viewing the room, or for a message whose event names its own `viewerIds`, those: a message marks
-   * it unread for the members who aren't, and a read clears the reader's mark. The latest message also records when the room was last active. A reply sent only to
+   * it unread for the members who aren't, in a DM counting it for them too, and a read clears the
+   * reader's mark. The latest message also records when the room was last active. A reply sent only to
    * its thread does neither, and isn't pushed to those its event's `viewerIds` say are viewing the thread,
    * in place of those viewing the room. Those the Workspace has applied before change nothing. Answers
-   * whose marks changed, and whether each is now unread, and, when a message has come in a DM, when the
-   * latest did and everyone in the DM, to tell. With `pushing`, it answers each new message's pushes too,
-   * found just after its marks, so that a push's badge counts them and none of the events after it, and
-   * to guests only if `guests` says they can stay signed in. It answers the bots' webhooks each new
-   * message is delivered to, but for a bot's reply to one, which reaches the room as any message does but
-   * goes to no webhook.
+   * whose marks changed, in a DM whose counts did, and how each is marked now, and, when a message has
+   * come in a DM, when the latest did and everyone in the DM, to tell. With `pushing`, it answers each
+   * new message's pushes too, found just after its marks, so that a push's badge counts them and none of
+   * the events after it, and to guests only if `guests` says they can stay signed in. It answers the
+   * bots' webhooks each new message is delivered to, but for a bot's reply to one, which reaches the room
+   * as any message does but goes to no webhook.
    */
   async applyRoomEvents(roomId: RoomId, events: RoomEvent[], viewerIds: UserId[], pushing = false, guests = false): Promise<AppliedEvents> {
     const viewers = JSON.stringify(viewerIds);
@@ -3736,7 +5457,7 @@ export class WorkspaceStore {
       const mentions = event.message ? JSON.stringify(event.message.mentionIds) : null;
       const followers = JSON.stringify(event.message?.followerIds ?? []);
       const inRoom = event.threadOnly ? 0 : 1;
-      const pushes = pushing && mentions !== null ? statements.push(statement(MESSAGE_PUSHES, roomId, userId, seeing, mentions, seq, guests ? 1 : 0, inRoom, followers)) - 1 : null;
+      const pushes = pushing && mentions !== null ? statements.push(statement(MESSAGE_PUSHES, roomId, userId, seeing, mentions, seq, guests ? 1 : 0, inRoom, followers, Date.now())) - 1 : null;
       // A bot's reply is never delivered to webhooks, as Campfire posts one without delivering it, nor is
       // @ember's answer, which is a reply too.
       const bots = kind === "message" && mentions !== null ? statements.push(statement(MESSAGE_BOTS, roomId, userId, mentions, seq)) - 1 : null;
@@ -3745,22 +5466,24 @@ export class WorkspaceStore {
     const told = statements.length;
     statements.push(...(message ? [statement(TOLD_OF_DIRECT_MESSAGE, roomId, message.seq), statement(APPLIED_WITH_MESSAGE, last, roomId, messageAt!)] : [statement(APPLIED, last, roomId)]));
     const results = await this.db.batch(statements);
-    const marks = new Map<UserId, string | null>();
-    for (const { event, marks: at } of applied) {
+    const toldIds = message ? userIdsOf(results[told] as UserIdRow[]) : [];
+    // Only a DM's people are told of its messages, and only a DM counts them.
+    const counted = toldIds.length > 0;
+    const marks = new Map<UserId, Mark | null>();
+    for (const { marks: at } of applied) {
       if (at === null) continue;
-      for (const { user_id } of results[at] as UserIdRow[]) marks.set(user_id, isNewMessage(event) ? event.at : null);
+      for (const row of results[at] as MarkRow[]) marks.set(row.user_id, markOf(row, counted));
     }
     const pushes = applied.flatMap(({ event, pushes: at }) => (at === null ? [] : messagePushes(roomId, event, results[at] as PushRow[])));
     const deliveries = applied.flatMap(({ event, bots: at }) => (at === null ? [] : messageDeliveries(event, results[at] as MessageBotRow[])));
     const webhooks = deliveries.flatMap(({ answers, ...delivery }) => (answers ? [] : [delivery]));
     const asks = deliveries.flatMap(({ answers, ...ask }) => (answers ? [ask] : []));
-    const toldIds = message ? userIdsOf(results[told] as UserIdRow[]) : [];
     return { marks, active: toldIds.length > 0 ? { at: messageAt!, userIds: toldIds } : null, pushes, webhooks, asks };
   }
 
-  /** Whether push subscription `id` is still saved, for someone active. */
-  async pushable(id: number): Promise<boolean> {
-    return (await this.db.all(PUSHABLE, id)).length > 0;
+  /** Whether push subscription `id` may still have a push: still saved, for someone active with no hush covering the moment, and, should they be a guest, no stay that's ended. */
+  async pushable(id: number, now: number): Promise<boolean> {
+    return (await this.db.all(PUSHABLE, id, now)).length > 0;
   }
 
   /** Forgets the push subscriptions with `ids`, which the push service has said are gone or can never be pushed to. */
@@ -3768,8 +5491,67 @@ export class WorkspaceStore {
     await this.db.run(`DELETE FROM push_subscriptions WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids));
   }
 
+  /**
+   * When someone has hushed their push notifications (Do not disturb) until, in milliseconds since the
+   * epoch, or null while they haven't, or their hush has passed: a stale row is simply none.
+   */
+  async dndUntilOf(userId: UserId, now: number): Promise<number | null> {
+    const [row] = await this.db.all<{ until_at: number }>(DND_UNTIL, userId, now);
+    return row ? row.until_at : null;
+  }
+
+  /** Hushes someone's push notifications until `untilAt`, in milliseconds, overwriting any hush they had. */
+  async setDnd(userId: UserId, untilAt: number): Promise<void> {
+    await this.db.all(SET_DND, userId, untilAt);
+  }
+
+  /** Lifts the hush on someone's push notifications, taking their row away. */
+  async clearDnd(userId: UserId): Promise<void> {
+    await this.db.run(CLEAR_DND, userId);
+  }
+
+  /**
+   * Saves the message `messageId` of room `roomId` for later for someone, answering the save, or null
+   * once they have it saved already. The insert, its count and the trim that keeps no more than the
+   * newest MAX_SAVES run as one batch, so two asks at once save it once.
+   */
+  async saveMessage(userId: UserId, roomId: RoomId, messageId: string, now: number): Promise<SavedMessage | null> {
+    const id = crypto.randomUUID();
+    // The insert's own cursor has no rows; the count's has the one.
+    const [, [{ inserted }]] = (await this.db.batch([
+      statement(SAVE_MESSAGE, id, userId, roomId, messageId, now),
+      statement(SAVE_MESSAGE_COUNT),
+      statement(TRIM_SAVES, userId, MAX_SAVES),
+    ])) as [[], [{ inserted: number }]];
+    return inserted === 1 ? { id, roomId, messageId, createdAt: now } : null;
+  }
+
+  /** The messages someone has saved for later, newest save first, at most the MAX_SAVES they saved most recently. */
+  async savesOf(userId: UserId): Promise<SavedMessage[]> {
+    const rows = await this.db.all<{ id: string; room_id: RoomId; message_id: string; created_at: number }>(SAVES_FOR_USER, userId, MAX_SAVES);
+    return rows.map(({ id, room_id, message_id, created_at }) => ({ id, roomId: room_id, messageId: message_id, createdAt: created_at }));
+  }
+
+  /** Deletes someone's save `id`, answering whether it was theirs to forget. */
+  async forgetSave(userId: UserId, id: string): Promise<boolean> {
+    const [, [{ gone }]] = (await this.db.batch([statement(FORGET_SAVE, id, userId), statement(FORGET_SAVE_COUNT)])) as [[], [{ gone: number }]];
+    return gone === 1;
+  }
+
+  /** Forgets the saves with `ids`, whose messages are gone or whose rooms their person can no longer see. */
+  async forgetSaves(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    await this.db.run(FORGET_SAVES, JSON.stringify(ids));
+  }
+
   async isMember(roomId: RoomId, userId: UserId): Promise<boolean> {
     return (await this.db.all(MEMBERSHIP, roomId, userId)).length > 0;
+  }
+
+  /** The kind of room `roomId`, a DM's too, or null when there's no such room. */
+  async roomKind(roomId: RoomId): Promise<RoomKind | null> {
+    const [row] = await this.db.all<{ kind: RoomKind }>(`SELECT kind FROM rooms WHERE id = ?`, roomId);
+    return row?.kind ?? null;
   }
 
   /** Whether room `roomId` is a direct conversation between `userId` and `otherId` alone, each an active member of it. */
@@ -3777,13 +5559,20 @@ export class WorkspaceStore {
     return (await this.db.all(BETWEEN, roomId, userId, otherId)).length > 0;
   }
 
-  /** Whether `userId` is in room `roomId`, and whether a ban blocks `ipAddress`, if there is one. */
-  async roomAccess(roomId: RoomId, userId: UserId, ipAddress: string | null): Promise<{ member: boolean; banned: boolean }> {
-    const [row] = await this.db.all<{ member: number; banned: number }>(ROOM_ACCESS, roomId, userId, ipAddress);
+  /**
+   * Whether `userId` is in room `roomId`, and whether a ban blocks `ipAddress`, if there is one. Asked
+   * for their session `sessionId`, it first records that the session comes from the address, if the
+   * room tags what it lets in with it (`taggedAddress`), in the same transaction, so that a ban of the
+   * address saved once this has read finds the session's rooms.
+   */
+  async roomAccess(roomId: RoomId, userId: UserId, ipAddress: string | null, sessionId: string | null = null): Promise<{ member: boolean; banned: boolean }> {
+    const tagged = taggedAddress(ipAddress);
+    const recording = sessionId !== null && tagged !== null ? [statement(RECORD_SESSION_ADDRESS, sessionId, tagged)] : [];
+    const [row] = (await this.db.batch([...recording, statement(ROOM_ACCESS, roomId, userId, ipAddress)])).at(-1) as Array<{ member: number; banned: number }>;
     return { member: row!.member === 1, banned: row!.banned === 1 };
   }
 
-  /** Everyone active, by name. */
+  /** Everyone active who can be put in a room, by name (`ACTIVE_PEOPLE`). */
   async activePeople(): Promise<User[]> {
     return this.db.all<User>(ACTIVE_PEOPLE);
   }
@@ -3793,28 +5582,109 @@ export class WorkspaceStore {
     return this.db.all<User>(PEOPLE_WITH_IDS, JSON.stringify(ids));
   }
 
+  /** The people with `ids` who exist, active or not, whom `askerId` can start a DM with (`DIRECT_PEOPLE`). */
+  async directPeople(ids: UserId[], askerId: UserId): Promise<User[]> {
+    return this.db.all<User>(DIRECT_PEOPLE, JSON.stringify(ids), askerId);
+  }
+
   /** The people with `ids`, whatever their status, as the people directory lists them. */
   async directoryEntries(ids: UserId[]): Promise<DirectoryEntry[]> {
     return (await this.db.all<DirectoryRow>(DIRECTORY_WITH_IDS, JSON.stringify(ids))).map(directoryEntry);
   }
 
   /**
-   * The first page of the active people whose names contain `query`, by name: room `roomId`'s members,
-   * or anyone's when it's null.
+   * The first page of the active people whose names contain `query`, by name, whom `askerId` can ask:
+   * room `roomId`'s members, or anyone's when it's null.
    */
-  async mentionable(query: string, roomId: RoomId | null): Promise<DirectoryEntry[]> {
-    const rows = roomId === null ? await this.db.all<DirectoryRow>(MENTIONABLE_PEOPLE, query) : await this.db.all<DirectoryRow>(MENTIONABLE_MEMBERS, query, roomId);
+  async mentionable(query: string, roomId: RoomId | null, askerId: UserId): Promise<DirectoryEntry[]> {
+    const rows =
+      roomId === null ? await this.db.all<DirectoryRow>(MENTIONABLE_PEOPLE, query, askerId) : await this.db.all<DirectoryRow>(MENTIONABLE_MEMBERS, query, roomId, askerId);
     return rows.map(directoryEntry);
   }
 
-  /** Everyone, whatever their status, for the people directory. */
-  async directory(): Promise<DirectoryEntry[]> {
-    return (await this.db.all<DirectoryRow>(DIRECTORY)).map(directoryEntry);
+  /** Everyone `askerId` is told of, whatever their status, for the people directory. */
+  async directory(askerId: UserId): Promise<DirectoryEntry[]> {
+    return (await this.db.all<DirectoryRow>(DIRECTORY, askerId)).map(directoryEntry);
+  }
+
+  /** The workspace's groups, by name, each with its members' ids. */
+  async userGroups(): Promise<UserGroup[]> {
+    return (await this.storedGroups(await this.db.all<{ id: GroupId; name: string }>(GROUPS))).map(({ id, name, members }) => ({
+      id,
+      name,
+      memberIds: members.map((member) => member.id),
+    }));
+  }
+
+  /** The groups with `ids` that exist, each with the people in it, named as they are now, for a room saying whom a group's mention stands for. */
+  async mentionedGroups(ids: GroupId[]): Promise<StoredGroup[]> {
+    return this.storedGroups(await this.db.all<{ id: GroupId; name: string }>(GROUPS_WITH_IDS, JSON.stringify(ids)));
+  }
+
+  /** The groups of `rows`, with their members, read together. */
+  private async storedGroups(rows: Array<{ id: GroupId; name: string }>): Promise<StoredGroup[]> {
+    if (rows.length === 0) return [];
+    const [members] = (await this.db.batch([statement(GROUP_MEMBERS, JSON.stringify(rows.map(({ id }) => id)))])) as [
+      Array<{ groupId: GroupId; userId: UserId; name: string }>,
+    ];
+    const inGroup = Map.groupBy(members, (member) => member.groupId);
+    return rows.map(({ id, name }) => ({ id, name, members: (inGroup.get(id) ?? []).map(({ userId, name }) => ({ id: userId, name })) }));
+  }
+
+  /** The id of the group named `name`, which is kept lowercased, or null while none is. */
+  async groupNamed(name: string): Promise<GroupId | null> {
+    const [row] = await this.db.all<{ id: GroupId }>(GROUP_NAMED, name);
+    return row?.id ?? null;
+  }
+
+  /** The id of the group `id`, or null while none has it, as changing or deleting one finds it. */
+  async userGroupWithId(id: GroupId): Promise<GroupId | null> {
+    const [row] = await this.db.all<{ id: GroupId }>(GROUP_WITH_ID, id);
+    return row?.id ?? null;
+  }
+
+  /** The active people of `ids`, once each, with whether each is a bot, to check a group's members. */
+  async activePeopleWithIds(ids: UserId[]): Promise<Array<{ id: UserId; bot: boolean }>> {
+    if (ids.length === 0) return [];
+    const rows = await this.db.all<{ id: string; role: number }>(ACTIVE_PEOPLE_WITH_IDS, JSON.stringify(ids));
+    return rows.map((row) => ({ id: row.id, bot: row.role === BOT }));
+  }
+
+  /** Adds a group, with its members, in one batch. The name is given lowercased, as it's kept. */
+  async createUserGroup({ id, name, memberIds, createdBy }: { id: GroupId; name: string; memberIds: UserId[]; createdBy: UserId }, now: string): Promise<void> {
+    await this.db.batch([
+      statement(`INSERT INTO user_groups (id, name, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, id, name, createdBy, now, now),
+      ...memberIds.map((userId) => statement(`INSERT INTO user_group_members (group_id, user_id) VALUES (?, ?)`, id, userId)),
+    ]);
+  }
+
+  /** Changes the group `id`, in one batch: its name, its members, either or both, recording when. The name is given lowercased, as it's kept. */
+  async changeUserGroup(id: GroupId, { name, memberIds }: { name?: string; memberIds?: UserId[] }, now: string): Promise<void> {
+    await this.db.batch([
+      statement(`UPDATE user_groups SET name = coalesce(?1, name), updated_at = ?2 WHERE id = ?3`, name ?? null, now, id),
+      ...(memberIds === undefined
+        ? []
+        : [statement(`DELETE FROM user_group_members WHERE group_id = ?`, id), ...memberIds.map((userId) => statement(`INSERT INTO user_group_members (group_id, user_id) VALUES (?, ?)`, id, userId))]),
+    ]);
+  }
+
+  /** Deletes the group `id` and everyone in it, in one batch. */
+  async deleteUserGroup(id: GroupId): Promise<void> {
+    await this.db.batch([
+      statement(`DELETE FROM user_group_members WHERE group_id = ?`, id),
+      statement(`DELETE FROM user_groups WHERE id = ?`, id),
+    ]);
   }
 
   /** Someone as the people directory lists them, whatever their status, or null if nobody has id `userId`. */
   async person(userId: UserId): Promise<DirectoryEntry | null> {
     const [row] = await this.db.all<DirectoryRow>(PERSON, userId);
+    return row ? directoryEntry(row) : null;
+  }
+
+  /** Someone a ban, or lifting one, can find: anyone with the id, as `person` reads them, unless they deleted their account. */
+  async bannablePerson(userId: UserId): Promise<DirectoryEntry | null> {
+    const [row] = await this.db.all<DirectoryRow>(BANNABLE_PERSON, userId);
     return row ? directoryEntry(row) : null;
   }
 
@@ -3880,13 +5750,145 @@ export class WorkspaceStore {
     return row ? { member: { id: userId, name: row.name }, administrator: row.administrator === 1 } : null;
   }
 
+  /** The workspace's commands, by name, and which of the bots are on which rooms' message events, read together: an administrator's every subscription, and anyone else's only those of the rooms they're in, whose ids alone they may read. */
+  async commands(viewerId: UserId, administrator: boolean): Promise<Commands> {
+    const [commandRows, subscriptions] = (await this.db.batch([statement(COMMANDS), administrator ? statement(SUBSCRIPTIONS) : statement(SUBSCRIPTIONS_IN_ROOMS_OF, viewerId)])) as [
+      CommandRow[],
+      EventSubscription[],
+    ];
+    return { commands: commandRows.map(commandOf), subscriptions };
+  }
+
+  /** The command `id` is, with its bot, or null unless there is one. */
+  async command(id: string): Promise<Command | null> {
+    const [row] = await this.db.all<CommandRow>(COMMAND_BY_ID, id);
+    return row ? commandOf(row) : null;
+  }
+
+  /** Whether a command with `name` is registered already. */
+  async commandTaken(name: string): Promise<boolean> {
+    return (await this.db.all(COMMAND_BY_NAME, name)).length > 0;
+  }
+
+  /** Registers a command, with `id` and what's given of it, for the bot `botId`, recording when. */
+  async registerCommand({ id, name, description, botId }: { id: string; name: string; description: string | null; botId: UserId }, now: string): Promise<void> {
+    await this.db.run(`INSERT INTO commands (id, name, description, bot_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, id, name, description, botId, now, now);
+  }
+
+  /** Forgets the command `id`, answering whether there was one. */
+  async removeCommand(id: string): Promise<boolean> {
+    const [row] = await this.db.all(`DELETE FROM commands WHERE id = ? RETURNING id`, id);
+    return row !== undefined;
+  }
+
+  /** The workspace's shortcuts, by name, each with its bot, as a message's More actions offers them. */
+  async shortcuts(): Promise<Shortcut[]> {
+    return (await this.db.all<ShortcutRow>(SHORTCUTS)).map(shortcutOf);
+  }
+
+  /** The shortcut `id` is, with its bot, or null unless there is one. */
+  async shortcut(id: string): Promise<Shortcut | null> {
+    const [row] = await this.db.all<ShortcutRow>(SHORTCUT_BY_ID, id);
+    return row ? shortcutOf(row) : null;
+  }
+
+  /** Whether a shortcut with `name` is registered already. */
+  async shortcutTaken(name: string): Promise<boolean> {
+    return (await this.db.all(SHORTCUT_BY_NAME, name)).length > 0;
+  }
+
+  /** Registers a shortcut, with `id` and what's given of it, for the bot `botId`, recording when. */
+  async registerShortcut({ id, name, description, botId }: { id: string; name: string; description: string | null; botId: UserId }, now: string): Promise<void> {
+    await this.db.run(`INSERT INTO shortcuts (id, name, description, bot_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, id, name, description, botId, now, now);
+  }
+
+  /** Forgets the shortcut `id`, answering whether there was one. */
+  async removeShortcut(id: string): Promise<boolean> {
+    const [row] = await this.db.all(`DELETE FROM shortcuts WHERE id = ? RETURNING id`, id);
+    return row !== undefined;
+  }
+
+  /** Puts the active bot `botId` on room `roomId`'s message events, answering whether it was put there. */
+  async subscribeToMessages(botId: UserId, roomId: RoomId, now: string): Promise<boolean> {
+    const [row] = await this.db.all(SUBSCRIBE, roomId, botId, now);
+    return row !== undefined;
+  }
+
+  /** Takes the bot `botId` off room `roomId`'s message events, answering whether it was on them. */
+  async unsubscribeFromMessages(botId: UserId, roomId: RoomId): Promise<boolean> {
+    const [row] = await this.db.all(UNSUBSCRIBE, roomId, botId);
+    return row !== undefined;
+  }
+
+  /**
+   * The command `name` names in room `roomId`, as its delivery finds it, with whoever typed it,
+   * `senderId`, by their names now: null once whoever typed it isn't an active member of the room; the
+   * command null within that once no command has the name, and the webhook null once its bot isn't an
+   * active one in the room with one, as `BOT_WEBHOOK` finds none for it then.
+   */
+  async commandWebhook(roomId: RoomId, senderId: UserId, name: string): Promise<{
+    command: { id: string; name: string } | null;
+    bot: User | null;
+    sender: User;
+    roomName: string | null;
+    webhook: BotWebhook | null;
+  } | null> {
+    const [[sender], [command]] = (await this.db.batch([statement(CLICKER, roomId, senderId), statement(COMMAND_BY_NAME, name)])) as [
+      Array<{ name: string; room_name: string | null }>,
+      CommandRow[],
+    ];
+    if (!sender) return null;
+    const webhook = command ? await this.botWebhook(roomId, command.bot_id) : null;
+    return {
+      command: command ? { id: command.id, name: command.name } : null,
+      bot: command ? { id: command.bot_id, name: command.bot_name } : null,
+      sender: { id: senderId, name: sender.name },
+      roomName: sender.room_name,
+      webhook,
+    };
+  }
+
+  /**
+   * The shortcut `shortcutId` names in room `roomId`, as its delivery finds it, with whoever picked it,
+   * `senderId`, by their names now: null once whoever picked it isn't an active member of the room; the
+   * shortcut null within that once no shortcut has the id, and the webhook null once its bot isn't an
+   * active one in the room with one, as `BOT_WEBHOOK` finds none for it then.
+   */
+  async shortcutWebhook(roomId: RoomId, senderId: UserId, shortcutId: string): Promise<{
+    shortcut: { id: string; name: string } | null;
+    bot: User | null;
+    sender: User;
+    roomName: string | null;
+    webhook: BotWebhook | null;
+  } | null> {
+    const [[sender], [shortcut]] = (await this.db.batch([statement(CLICKER, roomId, senderId), statement(SHORTCUT_BY_ID, shortcutId)])) as [
+      Array<{ name: string; room_name: string | null }>,
+      ShortcutRow[],
+    ];
+    if (!sender) return null;
+    const webhook = shortcut ? await this.botWebhook(roomId, shortcut.bot_id) : null;
+    return {
+      shortcut: shortcut ? { id: shortcut.id, name: shortcut.name } : null,
+      bot: shortcut ? { id: shortcut.bot_id, name: shortcut.bot_name } : null,
+      sender: { id: senderId, name: sender.name },
+      roomName: sender.room_name,
+      webhook,
+    };
+  }
+
   /** The active bot `botId`, with its token, its rooms but DMs and where its webhook delivers, or null unless it's one. */
+  /**
+   * The active bot `botId`, with its token, its rooms but DMs, where its webhook delivers and the open
+   * rooms it's kept to, if it's kept to the ones picked, or null unless it's one.
+   */
   async activeBot(botId: UserId): Promise<StoredBotSettings | null> {
     const [[row], rooms] = (await this.db.batch([statement(ACTIVE_BOT, botId), statement(BOT_ROOMS, botId)])) as [
-      Array<BotRow & { webhook_url: string | null }>,
-      BotRoom[],
+      Array<BotRow & { webhook_url: string | null; rooms_picked: number | null }>,
+      Array<BotRoom & { kind: string }>,
     ];
-    return row ? { ...storedBot(row, rooms), webhookUrl: row.webhook_url } : null;
+    if (!row) return null;
+    const open = rooms.flatMap(({ id, name, kind }) => (kind === "open" ? [{ id, name }] : []));
+    return { ...storedBot(row, rooms.map(({ id, name }) => ({ id, name }))), webhookUrl: row.webhook_url, pickedRooms: row.rooms_picked === 1 ? open : null };
   }
 
   /**
@@ -3922,28 +5924,36 @@ export class WorkspaceStore {
 
   /**
    * Adds a bot, with its webhook if it has somewhere to deliver and its avatar if it has one, in every
-   * open room, in one batch.
+   * open room or the ones it's kept to, in one batch.
    */
-  async createBot({ id, name, token, webhookUrl, avatar }: NewStoredBot, now: string): Promise<void> {
+  async createBot({ id, name, token, webhookUrl, avatar, rooms }: NewStoredBot, now: string): Promise<void> {
     await this.db.batch([
       statement(INSERT_BOT, id, name, token, avatar?.key ?? null, avatar?.variant ?? null, now, now),
       ...keeping(avatar),
       ...(webhookUrl === null ? [] : [statement(SAVE_WEBHOOK, id, webhookUrl, now)]),
-      statement(GRANT_OPEN_ROOMS_TO_USER, id, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, id, now, now, id),
+      ...botRoomsChange(id, rooms, now),
     ]);
   }
 
   /**
    * Changes a bot, in one batch: its webhook first, which delivers to `webhookUrl`, or goes when that's
-   * "", then its name, then its avatar, as `changeAvatar` gives someone theirs. What's left out stays as
-   * it is.
+   * "", then its name, then its avatar, as `changeAvatar` gives someone theirs, then the open rooms it's
+   * in (`botRoomsChange`), queuing turning away what it was let send to those it leaves, with `code`, due
+   * at `dueAt`, as taking someone out of a private room does. What's left out stays as it is. Answers
+   * whether it queued any revocations.
    */
-  async changeBot(botId: UserId, { name, webhookUrl }: BotChanges, now: string, avatar: AvatarChange | null): Promise<void> {
-    await this.db.batch([
+  async changeBot(botId: UserId, { name, webhookUrl, rooms }: BotChanges, code: CloseCode, dueAt: number, now: string, avatar: AvatarChange | null): Promise<boolean> {
+    // First, while the rooms it leaves still have it.
+    const revocations = rooms ? [statement(QUEUE_UNPICKED_ROOM_REVOCATIONS, botId, JSON.stringify(rooms), code, dueAt)] : [];
+    const [revoked] = (await this.db.batch([
+      ...revocations,
       ...(webhookUrl === undefined ? [] : [webhookUrl ? statement(SAVE_WEBHOOK, botId, webhookUrl, now) : statement(`DELETE FROM webhooks WHERE user_id = ?`, botId)]),
       ...(name === undefined ? [] : [statement(RENAME_BOT, name, now, botId)]),
       ...(avatar ? avatarChange(botId, avatar.avatar, avatar.previous, now, avatar.dueAt) : []),
-    ]);
+      ...(rooms === undefined ? [] : botRoomsChange(botId, rooms, now)),
+    ])) as unknown[][];
+    return revocations.length > 0 && revoked!.length > 0;
   }
 
   /** Gives a bot a new token, recording when, so its old key no longer works. */
@@ -3964,9 +5974,35 @@ export class WorkspaceStore {
     return row ? storedAgentSettings(row, rooms) : null;
   }
 
-  /** Agent `agentId` as a question for it in room `roomId` finds it (`ANSWERING_AGENT`), or null unless it's an active agent there. */
-  async answeringAgent(roomId: RoomId, agentId: UserId): Promise<AnsweringAgent | null> {
-    const [row] = await this.db.all<AnsweringColumns & { name: string; model: string }>(ANSWERING_AGENT, roomId, agentId);
+  /**
+   * The active agents `askerId` can ask, by name, as Available Agents lists them, each with the rooms it
+   * shares with them, if it's kept to the open rooms picked, and before them @ember as the people
+   * directory lists it, or null while Ember AI is off, read together.
+   */
+  async availableAgents(askerId: UserId): Promise<{ ember: DirectoryEntry | null; agents: AvailableStoredAgent[] }> {
+    const [[ember], agents, rooms] = (await this.db.batch([
+      statement(ACTIVE_PERSON, ASSISTANT_ID),
+      statement(AVAILABLE_AGENTS, askerId),
+      statement(AVAILABLE_AGENTS_ROOMS, askerId),
+    ])) as [DirectoryRow[], Array<DirectoryRow & Pick<AgentRow, "description" | "every_open_room">>, Array<AgentRoom & { user_id: UserId }>];
+    const roomsOf = Map.groupBy(rooms, (room) => room.user_id);
+    return {
+      ember: ember ? directoryEntry(ember) : null,
+      agents: agents.map((row) => ({
+        ...directoryEntry(row),
+        description: row.description,
+        access: keptForIn(row.agent_access) ?? "everyone",
+        rooms: row.every_open_room === 1 ? null : (roomsOf.get(row.id) ?? []).map(({ id, name }) => ({ id, name })),
+      })),
+    };
+  }
+
+  /**
+   * Agent `agentId` as a question `askerId` asked it in room `roomId` finds it (`ANSWERING_AGENT`), or null
+   * unless it's an active agent there that answers them.
+   */
+  async answeringAgent(roomId: RoomId, agentId: UserId, askerId: UserId): Promise<AnsweringAgent | null> {
+    const [row] = await this.db.all<AnsweringColumns & { name: string; model: string }>(ANSWERING_AGENT, roomId, agentId, askerId);
     return row ? { name: row.name, model: row.model, ...answeringOf(row) } : null;
   }
 
@@ -3995,38 +6031,62 @@ export class WorkspaceStore {
   /**
    * The names of everyone but `userId` who's active, or can be again with the name they have: people,
    * bots and agents active, and people banned, whom lifting the ban lets back, or suspended for their
-   * membership's lapsing, whom renewing it does.
+   * membership's lapsing, whom renewing it does. And everyone else's usernames, whatever their status, as
+   * a username stays its person's, and lifting a ban lets back even someone removed.
    */
   async namesInUse(userId: UserId | null): Promise<string[]> {
-    const rows = await this.db.all<{ name: string }>(`SELECT name FROM users WHERE status IN (${ACTIVE}, ${BANNED}, ${SUSPENDED}) AND id IS NOT ?`, userId);
+    const rows = await this.db.all<{ name: string }>(
+      `SELECT name FROM users WHERE status IN (${ACTIVE}, ${BANNED}, ${SUSPENDED}) AND id IS NOT ?1
+        UNION ALL SELECT username FROM users WHERE username IS NOT NULL AND id IS NOT ?1`,
+      userId,
+    );
     return rows.map((row) => row.name);
+  }
+
+  /** Whether anyone but `userId`, whatever their status, has `username`. */
+  async hasUsername(username: string, userId: UserId): Promise<boolean> {
+    return (await this.db.all(`SELECT 1 FROM users WHERE username = ? AND id <> ?`, username, userId)).length > 0;
+  }
+
+  /**
+   * The usernames that start with `start`, whatever their owners' status: a range of the index on them,
+   * since `{` sorts after every character a username can have.
+   */
+  async usernamesStartingWith(start: string): Promise<string[]> {
+    const rows = await this.db.all<{ username: string }>(`SELECT username FROM users WHERE username >= ?1 AND username < ?1 || '{'`, start);
+    return rows.map((row) => row.username);
   }
 
   /**
    * Adds an agent as `agent` has it, in one batch: a bot without a token, so that no key opens anything as
-   * it, with its avatar if it has one, what makes it an agent, and its memberships of every open room, or
-   * of the open rooms picked, of those there are.
+   * it, with its avatar if it has one, whom it's kept for, unless everyone can ask it, what makes it an
+   * agent, and its memberships of every open room, or of the open rooms picked, of those there are: of
+   * none, for one only administrators' direct messages reach.
    */
-  async createAgent({ id, name, avatar, rooms, createdBy, ...setup }: NewStoredAgent, now: string): Promise<void> {
+  async createAgent({ id, name, avatar, access, rooms: picked, createdBy, ...setup }: NewStoredAgent, now: string): Promise<void> {
+    const rooms = access === "admin-dms" ? [] : picked;
     await this.db.batch([
       statement(INSERT_BOT, id, name, null, avatar?.key ?? null, avatar?.variant ?? null, now, now),
+      ...(access === "everyone" ? [] : [statement(KEEP_AGENT_FOR, access, id)]),
       ...keeping(avatar),
       statement(INSERT_AGENT, id, ...agentColumns(setup), rooms === null ? 1 : 0, createdBy, now),
-      rooms === null ? statement(GRANT_OPEN_ROOMS_TO_USER, id, now, now) : statement(GRANT_PICKED_ROOMS, id, JSON.stringify(rooms), now),
+      rooms === null ? statement(GRANT_OPEN_ROOMS_TO_USER, id, now, now, id) : statement(GRANT_PICKED_ROOMS, id, JSON.stringify(rooms), now),
     ]);
   }
 
   /**
    * Changes agent `agentId` as `change` has it, in one batch: its name, its avatar, as `changeAvatar` gives
-   * someone theirs, its setup, recording who changed it, and when, and the open rooms it's in: every one,
-   * or just the ones picked, keeping the rooms it's in that aren't open.
+   * someone theirs, its setup, recording who changed it, and when, whom it's kept for, and the open rooms
+   * it's in: every one, or just the ones picked, keeping the rooms it's in that aren't open, or none at
+   * all, private rooms neither, once only administrators' direct messages reach it.
    */
-  async changeAgent(agentId: UserId, { name, setup, rooms, avatar, changedBy }: StoredAgentChange, now: string): Promise<void> {
+  async changeAgent(agentId: UserId, { name, setup, access, rooms, avatar, changedBy }: StoredAgentChange, now: string): Promise<void> {
     await this.db.batch([
       ...(name === undefined ? [] : [statement(RENAME_BOT, name, now, agentId)]),
       ...(avatar ? avatarChange(agentId, avatar.avatar, avatar.previous, now, avatar.dueAt) : []),
       statement(CHANGE_AGENT, agentId, ...agentColumns(setup), changedBy, now),
-      ...(rooms === undefined ? [] : roomsChange(agentId, rooms, now)),
+      ...(access === undefined ? [] : [statement(KEEP_AGENT_FOR, keptForOf(access), agentId)]),
+      ...(access === "admin-dms" ? leaveEveryRoom(agentId) : rooms === undefined ? [] : roomsChange(agentId, rooms, now)),
     ]);
   }
 
@@ -4302,7 +6362,7 @@ export class WorkspaceStore {
     await this.db.batch([
       statement(SET_ASSISTANT, assistantSetting(assistant), now),
       statement(ACTIVATE_ASSISTANT, ASSISTANT_ID, ASSISTANT_NAME, now),
-      statement(GRANT_OPEN_ROOMS_TO_USER, ASSISTANT_ID, now, now),
+      statement(GRANT_OPEN_ROOMS_TO_USER, ASSISTANT_ID, now, now, ASSISTANT_ID),
       // The agents come back as they were when it was turned off, and while it's on, these change nothing.
       statement(ACTIVATE_AGENTS, now),
       statement(RESTORE_AGENTS_ROOMS, now),
@@ -4336,28 +6396,82 @@ export class WorkspaceStore {
   }
 
   /**
-   * Saves someone's profile, and a new password when `passwordDigest` is one's, recording when. With a
-   * new password, in the same transaction it ends the sessions and forgets the push subscriptions
-   * `ended` says, queuing closing those sessions' sockets, and forgets the accounts elsewhere their old
-   * password started connecting, or connected, if they had one and keep an email address to sign in
-   * with (`UNLINK_ON_NEW_PASSWORD`). Answers whether it queued any.
+   * Saves someone's profile, what they gave the workspace's fields, and a new password when `passwordDigest`
+   * is one's, recording when, all in one batch, so a save of the lot can't land half-way. With a new
+   * password, in the same transaction it ends the sessions and forgets the push subscriptions
+   * `ended` says, queuing closing those sessions' sockets, ends the sign-in links the session it keeps
+   * has shown, and forgets the accounts elsewhere their old password started connecting, or connected, if
+   * they had one and keep an email address to sign in with (`UNLINK_ON_NEW_PASSWORD`). Answers whether it queued any.
    */
-  async changeProfile(userId: UserId, { name, emailAddress, bio, passwordDigest }: ProfileChange, now: string, ended: EndedByPassword | null): Promise<boolean> {
-    const change = statement(CHANGE_PROFILE, name, emailAddress, bio, passwordDigest, now, userId);
+  async changeProfile(userId: UserId, { name, username, emailAddress, bio, mood, passwordDigest, fieldValues }: ProfileChange, now: string, ended: EndedByPassword | null): Promise<boolean> {
+    const change = statement(CHANGE_PROFILE, name, username, emailAddress, bio, mood && JSON.stringify(mood), passwordDigest, now, userId);
+    const asked = changeProfileFieldValuesStatements(userId, fieldValues ?? {});
     if (!ended) {
-      await this.db.batch([change]);
+      await this.db.batch([change, ...asked]);
       return false;
     }
     const [queued] = await this.db.batch([
       // Before their sessions go, which it finds their sockets by.
       statement(QUEUE_OTHER_SESSION_REVOCATIONS, SESSION_TAG_PREFIX, ended.code, ended.dueAt, userId, ended.kept),
       statement(`DELETE FROM sessions WHERE user_id = ? AND id <> ?`, userId, ended.kept),
+      statement(`UPDATE sessions SET transfers_since = ? WHERE id = ?`, ended.dueAt, ended.kept),
       statement(`DELETE FROM push_subscriptions WHERE user_id = ? AND endpoint IS NOT ?`, userId, ended.pushEndpoint),
       statement(`DELETE FROM pending_identities WHERE user_id = ?`, userId),
       statement(UNLINK_ON_NEW_PASSWORD, userId, emailAddress),
       change,
+      ...asked,
     ]);
     return queued!.length > 0;
+  }
+
+  /** The workspace's profile fields, in the order they come in the profile. */
+  async profileFields(): Promise<StoredProfileField[]> {
+    const rows = await this.db.all<{ id: string; name: string; options: string | null; position: number }>(PROFILE_FIELDS);
+    return rows.map(({ id, name, options, position }) => ({ id, name, options: options === null ? null : (JSON.parse(options) as string[]), position }));
+  }
+
+  /**
+   * The workspace's profile fields, in the order they come in the profile, with what `userId` saved for
+   * each, "" for none, as their profile and someone else's page show them.
+   */
+  async profileFieldsWithValues(userId: UserId): Promise<ProfileFieldEntry[]> {
+    const [fields, values] = await Promise.all([this.profileFields(), this.db.all<{ field_id: string; value: string }>(PROFILE_FIELD_VALUES, userId)]);
+    const saved = new Map(values.map(({ field_id, value }) => [field_id, value]));
+    return fields.map(({ id, name, options }) => ({ id, name, options, value: saved.get(id) ?? "" }));
+  }
+
+  /** Adds a field after the workspace's last, which the Workspace counts against the cap beforehand. */
+  async createProfileField({ id, name, options }: { id: string; name: string; options: string[] | null }, now: string): Promise<void> {
+    const [row] = await this.db.all<{ position: number }>(NEXT_FIELD_POSITION);
+    await this.db.run(
+      `INSERT INTO profile_fields (id, name, options, position, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      id,
+      name,
+      options === null ? null : JSON.stringify(options),
+      row!.position,
+      now,
+      now,
+    );
+  }
+
+  /** Saves a field's new name and choices. Whether it's still there, the Workspace has checked. */
+  async changeProfileField(id: string, name: string, options: string[] | null, now: string): Promise<void> {
+    await this.db.run(`UPDATE profile_fields SET name = ?, options = ?, updated_at = ? WHERE id = ?`, name, options === null ? null : JSON.stringify(options), now, id);
+  }
+
+  /** Takes a field away, with everything anyone saved for it, in one batch. */
+  async deleteProfileField(id: string): Promise<void> {
+    await this.db.batch([statement(`DELETE FROM profile_field_values WHERE field_id = ?`, id), statement(`DELETE FROM profile_fields WHERE id = ?`, id)]);
+  }
+
+  /** Puts the fields in the order `ids` lists them, which the Workspace has checked names them all, once each. */
+  async reorderProfileFields(ids: string[], now: string): Promise<void> {
+    await this.db.batch(ids.map((id, position) => statement(`UPDATE profile_fields SET position = ?, updated_at = ? WHERE id = ?`, position + 1, now, id)));
+  }
+
+  /** Saves what `userId` gave the fields named, in one batch. */
+  async changeProfileFieldValues(userId: UserId, values: Record<string, string>): Promise<void> {
+    await this.db.batch(changeProfileFieldValuesStatements(userId, values));
   }
 
   /** What whoever has id `userId` signs in with, whatever their status, or null if nobody does. */
@@ -4371,8 +6485,11 @@ export class WorkspaceStore {
 
   /** What the avatar of whoever has id `userId` is drawn from, whatever their status, or null if nobody does. */
   async avatarOwner(userId: UserId): Promise<AvatarOwner | null> {
-    const [row] = await this.db.all<{ name: string; role: number } & AvatarColumns>(`SELECT name, role, avatar_key, avatar_variant FROM users WHERE id = ?`, userId);
-    return row ? { name: row.name, bot: ROLES[row.role] === "bot", avatar: avatarOf(row) } : null;
+    const [row] = await this.db.all<{ name: string; role: number; agent_access: string | null } & AvatarColumns>(
+      `SELECT name, role, avatar_key, avatar_variant, agent_access FROM users WHERE id = ?`,
+      userId,
+    );
+    return row ? { name: row.name, bot: ROLES[row.role] === "bot", avatar: avatarOf(row), keptFor: keptForIn(row.agent_access) } : null;
   }
 
   /** Someone with the avatar they've uploaded, or a bot was given, whatever their status, or null if nobody has id `userId`. */
@@ -4487,45 +6604,58 @@ export class WorkspaceStore {
     ]);
   }
 
-  /** Room `roomId`, unless it's a DM or someone isn't in it, and whether they can change it. */
-  async roomToChange(roomId: RoomId, userId: UserId): Promise<{ room: SharedRoom; canAdminister: boolean } | null> {
+  /** Room `roomId`, unless it's a DM or someone isn't in it, and whether they can change it, and turn huddles on or off in it. */
+  async roomToChange(roomId: RoomId, userId: UserId): Promise<{ room: SharedRoom; canAdminister: boolean; canChangeHuddles: boolean } | null> {
     const [row] = await this.db.all<RoomToChangeRow>(ROOM_TO_CHANGE, roomId, userId);
     return row ? roomToChange(row) : null;
   }
 
-  /** The same, with everyone active and whether they're in the room, read together. */
+  /** The room's settings, with everyone active and whether they're in it — but for a guest of one room, its members alone, as their directory is — and when each of its guests' stay ends, read together. */
+  /** The same, with everyone active who can be put in a room and whether they're in it, read together. */
   async roomSettings(roomId: RoomId, userId: UserId): Promise<RoomSettings | null> {
-    const [[row], people] = (await this.db.batch([statement(ROOM_TO_CHANGE, roomId, userId), statement(ACTIVE_PEOPLE_IN_ROOM, roomId)])) as [
-      RoomToChangeRow[],
-      Array<User & { member: number }>,
-    ];
-    return row ? { ...roomToChange(row), people: people.map((person) => ({ ...person, member: person.member === 1 })) } : null;
+    const stay = await this.guestStayOf(userId);
+    const [[row], people, stays] = (await this.db.batch([
+      statement(ROOM_TO_CHANGE, roomId, userId),
+      statement(stay ? STAY_PEOPLE_IN_ROOM : ACTIVE_PEOPLE_IN_ROOM, roomId),
+      statement(`SELECT user_id, until_at FROM guest_stays WHERE room_id = ?`, roomId),
+    ])) as [RoomToChangeRow[], Array<User & { member: number }>, Array<{ user_id: UserId; until_at: number }>];
+    const untilOf = new Map(stays.map((stay) => [stay.user_id, stay.until_at]));
+    return row
+      ? {
+          ...roomToChange(row),
+          people: people.map((person) => {
+            const until = untilOf.get(person.id);
+            return until === undefined ? { ...person, member: person.member === 1 } : { ...person, member: true, guestUntil: new Date(until).toISOString() };
+          }),
+        }
+      : null;
   }
 
   /**
-   * Makes `changes` to a room in one transaction: renames it, and makes it open to everyone active, or
-   * private to just the people `memberIds` names, taking anyone else out but those suspended in a room
-   * that was private already, whom its settings don't list, and queueing closing their sockets there
-   * with `code`, due at `dueAt`. Answers what it changed, who's in the room then, and whether the shared
-   * order ranks it.
+   * Makes `changes` to a room in one transaction: renames it, allows huddles in it or not, and makes it
+   * open to everyone active, or private to just the people `memberIds` names, taking anyone else out but
+   * those suspended in a room that was private already, whom its settings don't list, and queueing
+   * closing their sockets there with `code`, due at `dueAt`. Answers what it changed, who's in the room
+   * then, and whether the shared order ranks it.
    */
   async changeRoom(roomId: RoomId, changes: RoomChanges, code: CloseCode, dueAt: number, now: string): Promise<SavedRoomChange> {
-    const update = statement(UPDATE_ROOM, changes.name ?? null, changes.kind ?? null, changes.icon ?? null, now, roomId);
+    const update = statement(UPDATE_ROOM, changes.name ?? null, changes.kind ?? null, changes.icon ?? null, now, roomId, changes.huddles === undefined ? null : Number(changes.huddles));
     const members = statement(ROOM_MEMBERS, roomId);
     const ranked = statement(ROOM_RANKED, roomId);
     if (changes.kind === "open") {
       const grant = statement(GRANT_ROOM_TO_ACTIVE_USERS, roomId, now, now);
       const [updated, added, after, rank] = (await this.db.batch([update, grant, members, ranked])) as UserIdRow[][];
-      return { roomChanged: updated!.length > 0, memberIds: userIdsOf(after!), addedIds: userIdsOf(added!), removedIds: [], ranked: isRanked(rank!) };
+      return { roomChanged: updated!.length > 0, memberIds: userIdsOf(after!), addedIds: userIdsOf(added!), removedIds: [], madePrivate: false, ranked: isRanked(rank!) };
     }
     if (changes.kind !== "closed") {
       const [updated, after] = (await this.db.batch([update, members])) as UserIdRow[][];
       // Nobody new is in it, so nobody's sidebar has left it out.
-      return { roomChanged: updated!.length > 0, memberIds: userIdsOf(after!), addedIds: [], removedIds: [], ranked: false };
+      return { roomChanged: updated!.length > 0, memberIds: userIdsOf(after!), addedIds: [], removedIds: [], madePrivate: false, ranked: false };
     }
     const memberIds = JSON.stringify(changes.memberIds);
-    // Whom it takes out is read before the room's kind changes, which says whether anyone suspended stays.
-    const [, removed, updated, added, after, rank] = (await this.db.batch([
+    // Whether it was open, and whom it takes out, are read before the room's kind changes, which says whether anyone suspended stays.
+    const [madePrivate, , removed, updated, added, after, rank] = (await this.db.batch([
+      statement(QUEUE_OPEN_ROOMS_ONLY_REVOCATION, OPEN_ROOMS_ONLY, code, dueAt, roomId),
       statement(QUEUE_MEMBER_REVOCATIONS, code, dueAt, roomId, memberIds),
       statement(REVOKE_ROOM_FROM_OTHERS, roomId, memberIds),
       update,
@@ -4538,6 +6668,7 @@ export class WorkspaceStore {
       memberIds: userIdsOf(after!),
       addedIds: userIdsOf(added!),
       removedIds: userIdsOf(removed!),
+      madePrivate: madePrivate!.length > 0,
       ranked: isRanked(rank!),
     };
   }
@@ -4579,6 +6710,7 @@ export class WorkspaceStore {
       // Its messages all go, a banned person's with them, and the search index forgets them.
       statement(`DELETE FROM pending_purges WHERE room_id = ?`, roomId),
       statement(`DELETE FROM pending_reindexes WHERE room_id = ?`, roomId),
+      statement(`DELETE FROM bot_subscriptions WHERE room_id = ?`, roomId),
       statement(`DELETE FROM rooms WHERE id = ?`, roomId),
       statement(`INSERT INTO deleted_rooms (id, deleted_at) VALUES (?, ?) ON CONFLICT DO NOTHING`, roomId, now),
     ])) as UserIdRow[][];
@@ -4608,17 +6740,21 @@ export class WorkspaceStore {
 
   /**
    * The DM whose people are exactly the ones `memberIds` names, who all exist, adding it as `roomId`,
-   * made by `creatorId`, if they have none, in one transaction. Answers it, and whether it added it.
+   * made by `creatorId`, if they have none, in one transaction. Answers it, and whether it added it, or,
+   * when it would add it but someone it names has blocked `creatorId`, the name of the first of them by
+   * name, having added nothing.
    */
-  async startDirect(roomId: RoomId, creatorId: UserId, memberIds: UserId[], now: string): Promise<{ room: DirectRoom; started: boolean }> {
+  async startDirect(roomId: RoomId, creatorId: UserId, memberIds: UserId[], now: string): Promise<{ room: DirectRoom; started: boolean } | { refusedBy: string }> {
     const key = directKey(memberIds);
-    const [added, , members] = (await this.db.batch([
+    const [added, , members, blockers] = (await this.db.batch([
       statement(INSERT_DIRECT, roomId, creatorId, key, now),
       statement(GRANT_DIRECT, roomId, now, key),
       statement(DIRECT_WITH_KEY, key),
-    ])) as [unknown[], unknown[], KeyedDirectMemberRow[]];
-    const [{ room_id: id, active_at: activeAt }] = members as [KeyedDirectMemberRow];
-    return { room: { id, kind: "direct", members: membersOf(members), activeAt }, started: added!.length > 0 };
+      statement(BLOCKERS_OF, creatorId, key),
+    ])) as [unknown[], unknown[], KeyedDirectMemberRow[], Array<{ name: string }>];
+    const [first] = members;
+    if (!first) return { refusedBy: blockers[0]!.name };
+    return { room: directOf(first.room_id, first.active_at, members, first), started: added!.length > 0 };
   }
 
   /** Of the rooms `ids` names, the ones that aren't registered yet and were never deleted. The ids go as one JSON value. */
@@ -4639,5 +6775,72 @@ export class WorkspaceStore {
       statement(GRANT_ROOM_TO_ACTIVE_USERS, id, now, now),
       statement(`INSERT INTO pending_reindexes (room_id, due_at) VALUES (?, 0) ON CONFLICT DO NOTHING`, id),
     ]);
+  }
+
+  /** Asks a reminder of a message for someone, keeping what the message read then. */
+  async queueReminder(reminder: StoredReminder): Promise<void> {
+    await this.db.batch([statement(QUEUE_REMINDER, reminder.id, reminder.userId, reminder.roomId, reminder.messageId, reminder.parentId, reminder.creatorId, reminder.creatorName, reminder.excerpt, reminder.remindAt, reminder.createdAt)]);
+  }
+
+  /** Someone's reminders, the one coming soonest first. */
+  async remindersFor(userId: UserId): Promise<StoredReminderRow[]> {
+    return this.db.all<StoredReminderRow>(REMINDERS_FOR_USER, userId);
+  }
+
+  /** One of someone's reminders, theirs alone, or null for one that isn't. */
+  async reminderFor(userId: UserId, id: string): Promise<StoredReminderRow | null> {
+    const [row] = await this.db.all<StoredReminderRow>(REMINDER_FOR_USER, id, userId);
+    return row ?? null;
+  }
+
+  /** One reminder by its id, whoever asked for it, or null for one that isn't there any more. */
+  async reminder(id: string): Promise<StoredReminderDelivery | null> {
+    const [row] = await this.db.all<StoredReminderDelivery>(REMINDER_BY_ID, id);
+    return row ?? null;
+  }
+
+  /**
+   * The reminders that have come due and still have a notice to say or pushes to try, the oldest due
+   * first, with who asked for each and whether its tabs haven't heard it yet. A reminder whose pushes
+   * failed waits, since they did, for `REMINDER_PUSH_RETRY_MS`, so a run that comes round sooner tries
+   * nothing of it. The pushes whose day of tries is past (`pushesUntil`) are given up on first, in the
+   * same transaction, so the read asks after none of them.
+   */
+  async dueReminders(now: number, pushesUntil: number, limit: number): Promise<DueReminder[]> {
+    const results = await this.db.batch([
+      statement(`UPDATE reminders SET pushed_at = ? WHERE pushed_at IS NULL AND reminded_at IS NOT NULL AND remind_at <= ?`, now, pushesUntil),
+      statement(DUE_REMINDERS, now, now - REMINDER_PUSH_RETRY_MS, limit),
+    ]);
+    return (results[1] as Array<StoredReminderRow & { userId: UserId; untold: number }>).map(({ untold, ...reminder }) => ({ ...reminder, untold: untold === 1 }));
+  }
+
+  /** Says a reminder has been told, answering whether this run is the one that told it. */
+  async markReminderTold(id: string, now: number): Promise<boolean> {
+    return (await this.db.all(`UPDATE reminders SET reminded_at = ? WHERE id = ? AND reminded_at IS NULL RETURNING id`, now, id)).length > 0;
+  }
+
+  /** Says a reminder's pushes have gone out, or are given up on, keeping which browsers they reached, and answers whether this run settled them. */
+  async markReminderPushed(id: string, now: number, reached: string): Promise<boolean> {
+    return (await this.db.all(`UPDATE reminders SET pushed_at = ?, delivered = ? WHERE id = ? AND pushed_at IS NULL RETURNING id`, now, reached, id)).length > 0;
+  }
+
+  /** Keeps when a reminder's pushes failed, and which browsers they reached, which puts trying the rest off for `REMINDER_PUSH_RETRY_MS`. */
+  async markReminderPushTried(id: string, now: number, reached: string): Promise<boolean> {
+    return (await this.db.all(`UPDATE reminders SET push_tried_at = ?, delivered = ? WHERE id = ? AND pushed_at IS NULL RETURNING id`, now, reached, id)).length > 0;
+  }
+
+  /** Takes one of someone's reminders away, answering whether there was one to take. */
+  async deleteReminder(userId: UserId, id: string): Promise<boolean> {
+    return (await this.db.all(`DELETE FROM reminders WHERE id = ? AND user_id = ? RETURNING id`, id, userId)).length > 0;
+  }
+
+  /** Whether someone is in a room. */
+  async inRoom(userId: UserId, roomId: RoomId): Promise<boolean> {
+    return (await this.db.all(IN_ROOM, userId, roomId)).length > 0;
+  }
+
+  /** The subscriptions someone's browsers have saved, or none of a guest's while guests can't stay signed in. */
+  async pushDeliveriesFor(userId: UserId, guests: boolean, now: number): Promise<PushDelivery[]> {
+    return this.db.all<PushDelivery>(PUSH_DELIVERIES_FOR_USER, userId, guests ? 1 : 0, now);
   }
 }

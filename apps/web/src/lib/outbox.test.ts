@@ -129,7 +129,7 @@ describe("Send what was left unsent", () => {
     handOver("general", [message, reply]);
     await effectsRun();
     // A hidden tab's, so that the room reads nothing for it.
-    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=4");
+    expect(socket().url).toBe("ws://localhost:3000/api/rooms/general/socket?visible=0&protocol=5");
 
     socket().open();
     expect(socket().sent).toEqual([]);
@@ -283,6 +283,15 @@ describe("Take back what was left unsent", () => {
     socket().receive(welcome());
     socket().receive({ type: "error", message: "Something went wrong", clientMessageId: "Refused", failed: "message.create" });
     expect(takeBack("general", ada)).toEqual([sent("Sent"), { ...sent("Refused"), failed: true }]);
+  });
+
+  it("hands one refused for what it says back with why, for the composer of the view taking it back to give back", async () => {
+    handOver("general", [waiting("Fudge")]);
+    await effectsRun();
+    socket().open();
+    socket().receive(welcome());
+    socket().receive({ type: "error", message: "This community doesn't allow one of these words.", clientMessageId: "Fudge", failed: "message.create", rewrite: true });
+    expect(takeBack("general", ada)).toEqual([{ ...sent("Fudge"), failed: true, rewrite: "This community doesn't allow one of these words." }]);
   });
 
   it("connects once every view going has handed over, and not at all when the view opening takes it all back", async () => {
