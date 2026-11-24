@@ -18,8 +18,12 @@ import {
   isRoomId,
   mailboxOf,
   mailboxUnder,
+<<<<<<< HEAD
   MAX_GUEST_NAME_LENGTH,
   MAX_PROFILE_FIELDS,
+=======
+  MAX_SECTIONS,
+>>>>>>> ember/v0.5.0
   NAVIGATION_SLOTS,
   othersAfterMove,
   parseWorkspaceClientFrame,
@@ -59,6 +63,7 @@ import {
   type Invited,
   type Involvement,
   type Me,
+  type MembersChange,
   type NavigationIconChanges,
   type NavigationIcons,
   type NewBot,
@@ -66,8 +71,12 @@ import {
   type NewRoom,
   type NewRoomForm,
   type NewWorkspace,
+<<<<<<< HEAD
   type NewUserGroup,
   type PersonMood,
+=======
+  type NotifiedCounts,
+>>>>>>> ember/v0.5.0
   type PersonRole,
   type Profile,
   type ProfileChanges,
@@ -82,13 +91,22 @@ import {
   type RoomGuest,
   type RoomId,
   type RoomKind,
+  type RoomLayout,
   type RoomSettings,
+<<<<<<< HEAD
   type SavedMessage,
+=======
+  type SavedRoomLayout,
+>>>>>>> ember/v0.5.0
   type Search,
+  type Section,
+  type SectionChoice,
+  type SectionId,
   type SentTestEmail,
   type SharedRoom,
   type Sidebar,
   type SidebarRoom,
+  type SpecialMention,
   type User,
   type UserId,
   type UserStatus,
@@ -141,6 +159,7 @@ import { blockedWordsCheck, type BlockedWordsCheck } from "@ember/protocol/block
 import { hearsAllHuddleSounds, type HuddleSoundChanges, type HuddleSounds, type PastHuddle } from "@ember/protocol/huddles";
 import type { MemberfulKeysChange, MemberfulSaved } from "@ember/protocol/memberful";
 import type { HandledReports, NewReport, ReportOutcome, Reports, ReportSubject } from "@ember/protocol/reports";
+import { PRIVATE_ROOM_NAME, type MentionRoom } from "@ember/richtext";
 import type { Gateway } from "./assistant/gateway";
 import { modelsFileUrlOf, type KeptModelsFile, type KeptWorkersAiModels } from "./assistant/offered";
 import { providerMovesOf } from "./assistant/model-tests";
@@ -178,6 +197,8 @@ import { AddressLimit, FixedWindowLimit } from "./rate-limit";
 import { urlOf } from "./request-url";
 import { OPEN_ROOMS_ONLY, sessionTag } from "./revocations";
 import type { HuddleChange, RoomEvent } from "./room-log";
+import { searchIndex } from "./search-index";
+import type { RoomReaders } from "./search-words";
 import { appConnector } from "./apps/connector";
 import { ACCESS_TTL_SECONDS, CODE_TTL_MS, provesChallenge, REFRESH_TTL_MS } from "./outside/oauth";
 import { OutsideStore, type NewOutsideConnection, type OutsideClient, type OutsideTokens, type StoredOutsideConnection } from "./outside/store";
@@ -194,6 +215,7 @@ import { CLOSE_REASONS, closeTooLarge, isTooLarge, MAX_WORKSPACE_FRAME_SIZE, RES
 import type { Transfer } from "./transfers";
 import type { TurnstileKeys } from "./turnstile";
 import {
+  allowingChannelMentions,
   allowingHuddles,
   NEW_ACCOUNT_LOOKS,
   WorkspaceStore,
@@ -214,6 +236,7 @@ import {
   type LinkedPerson,
   type LoggedOut,
   type LoggedOutSessions,
+  type MessagePush,
   type OtherWays,
   type MovedModel,
   type NewPerson,
@@ -235,6 +258,7 @@ import {
   type StoredAppRead,
   type AgentToolPicks,
   type ChangedPicks,
+  type ChosenSection,
   type StoredToolPick,
   type StoredAgentSettings,
   type StoredBot,
@@ -368,6 +392,7 @@ const WAITING_PROBES = 20;
  * subrequest, of which an invocation on the Free plan can make 50, its queries included.
  */
 const DELIVERIES_PER_RUN = 40;
+<<<<<<< HEAD
 /** How many lapsed stays of the guests of one room one run lapses, before the next takes the rest. */
 const GUEST_STAYS_LAPSED_AT_ONCE = 20;
 /**
@@ -376,6 +401,11 @@ const GUEST_STAYS_LAPSED_AT_ONCE = 20;
  * and the person it publishes again, each a query or a call.
  */
 const COSTS_PER_LAPSED_STAY = 5;
+=======
+
+/** How many rooms whose kind changed an alarm run tells the search index who can read, in one call. */
+const READERS_PER_RUN = 100;
+>>>>>>> ember/v0.5.0
 /**
  * How long a change waits for the rooms to close the sockets it queued before it answers. The alarm sees
  * to a room that takes longer.
@@ -517,6 +547,9 @@ const accountOf = (
     hideTranslationButtons,
     customStyles,
     restrictRoomCreation,
+    restrictChannelMentions,
+    restrictEveryoneMention,
+    warnBeforeNotifying,
     customDomain,
     joinLink,
     openSignUp,
@@ -529,6 +562,7 @@ const accountOf = (
     navigationIcons,
     huddleCameras,
     huddleScreens,
+    huddleVideo,
     updatedAt,
     storedLogo,
   }: JoinableAccount,
@@ -539,6 +573,9 @@ const accountOf = (
   hideTranslationButtons,
   customStyles,
   restrictRoomCreation,
+  restrictChannelMentions,
+  restrictEveryoneMention,
+  warnBeforeNotifying,
   logo: storedLogo && accountLogoPath(updatedAt),
   customDomain,
   joinLink,
@@ -553,6 +590,7 @@ const accountOf = (
   huddles,
   huddleCameras,
   huddleScreens,
+  huddleVideo,
 });
 
 /** The parts of the account that Ember AI's settings are made of. */
@@ -762,6 +800,12 @@ export interface ShownPerson {
   agent: AgentProfile | null;
 }
 
+/** Whom someone can mention somewhere: the people there, and the special mentions they can make there. */
+export interface Mentionable {
+  people: DirectoryEntry[];
+  specialMentions: SpecialMention[];
+}
+
 /**
  * What a search needs from the Workspace: who's searching, the rooms whose messages they can search, the
  * ones they've hidden and DMs too, and their recent searches, newest first.
@@ -918,6 +962,12 @@ export type SignUpRefusal = "closed" | "full";
 
 /** Why someone can't be called a name: it's an agent's, or it has a word Blocked words keeps out. */
 export type NameRefusal = "agent's name" | "blocked words";
+
+/**
+ * Why a room can't go in the section New room or its settings choose: it isn't there, a new one is an
+ * administrator's to make, there are as many as there can be, or its name has a word Blocked words keeps out.
+ */
+export type SectionRefusal = "no such section" | "new sections administrators only" | "too many sections" | "blocked words";
 
 /** What a room's events answer: what the room is to deliver, and the version of the blocked words (`blockedWords`). */
 export type RoomEventAnswer = RoomEventDeliveries & { blockedWords: string };
@@ -1135,6 +1185,13 @@ const yourApp = ({ appId, appName, signedIn }: OwnAppSignIn): YourApp => ({
 
 /** Whether `app` is still asked where it was `at`, as the same account: what its server answered then is still about it. */
 const isAskedAt = (app: StoredApp, at: AskedAt) => app.url === at.url && app.sealedToken === at.sealedToken && (app.signedIn?.at ?? null) === at.signedInAt;
+
+/**
+ * Whether `changes` would move `app`, which keeps a token, to another address without the token given
+ * again: a token goes only to the address it was given for, so the change is refused.
+ */
+export const movesItsToken = (app: { url: string; sealedToken: string | null }, changes: AppChanges) =>
+  changes.url !== undefined && changes.url !== app.url && changes.token === undefined && app.sealedToken !== null;
 
 /** The access token of a sign-in to an app, or null once it has ended, with when the app was signed in to as that token is its: null for an app that's gone. */
 interface SignInKey {
@@ -1652,12 +1709,23 @@ export class Workspace extends DurableObject<Env> {
    */
   async changeAccount(
     credentials: Credentials,
-    { name, tagline, settings, customDomain, navigationIcons, emailFrom, emailDomains, blockedWords }: AccountChanges,
+    { name, tagline, settings, huddleVideo, customDomain, navigationIcons, emailFrom, emailDomains, blockedWords }: AccountChanges,
     host: string,
   ): Promise<Account | AccountRefusal | "forbidden" | null> {
     return this.administerAccount(credentials, async (account) => {
       // Only what differs is written.
-      const { hideTranslationButtons, restrictRoomCreation, huddleCameras, huddleScreens, joinLink, openSignUp, emailDomainSignUp } = settings ?? {};
+      const {
+        hideTranslationButtons,
+        restrictRoomCreation,
+        restrictChannelMentions,
+        restrictEveryoneMention,
+        warnBeforeNotifying,
+        huddleCameras,
+        huddleScreens,
+        joinLink,
+        openSignUp,
+        emailDomainSignUp,
+      } = settings ?? {};
       const memberful = memberfulChange(account, settings ?? {});
       const ssoSwitches = ssoChange(account, settings ?? {});
       const icons = changedNavigationIcons(account.navigationIcons, navigationIcons ?? {});
@@ -1668,8 +1736,12 @@ export class Workspace extends DurableObject<Env> {
         ...(tagline !== undefined && tagline !== account.tagline && { tagline }),
         ...(hideTranslationButtons !== undefined && hideTranslationButtons !== account.hideTranslationButtons && { hideTranslationButtons }),
         ...(restrictRoomCreation !== undefined && restrictRoomCreation !== account.restrictRoomCreation && { restrictRoomCreation }),
+        ...(restrictChannelMentions !== undefined && restrictChannelMentions !== account.restrictChannelMentions && { restrictChannelMentions }),
+        ...(restrictEveryoneMention !== undefined && restrictEveryoneMention !== account.restrictEveryoneMention && { restrictEveryoneMention }),
+        ...(warnBeforeNotifying !== undefined && warnBeforeNotifying !== account.warnBeforeNotifying && { warnBeforeNotifying }),
         ...(huddleCameras !== undefined && huddleCameras !== account.huddleCameras && { huddleCameras }),
         ...(huddleScreens !== undefined && huddleScreens !== account.huddleScreens && { huddleScreens }),
+        ...(huddleVideo !== undefined && huddleVideo !== account.huddleVideo && { huddleVideo }),
         ...(moving && { customDomain }),
         ...(!sameDomains(otherAddresses, account.otherAddresses) && { otherAddresses }),
         ...(joinLink !== undefined && joinLink !== account.joinLink && { joinLink }),
@@ -3938,18 +4010,31 @@ export class Workspace extends DurableObject<Env> {
   /**
    * The sidebar of the person `credentials` signs in: the rooms they're in, the ones they've starred and
    * the shared order of the rest, with the welcome card's invitation if they're an administrator in the
+<<<<<<< HEAD
    * workspace's first room who hasn't dismissed the card, the people it suggests for DMs, and the huddles
    * going on in their rooms, which of a huddle's sounds they hear, once they've turned one off, and for
    * an administrator, how many open reports they see. A guest of one room, who starts no DM, is
    * suggested nobody, whose names would be none of theirs to have. Null without a valid session.
+=======
+   * workspace's first room who hasn't dismissed the card, the huddles going on in their rooms, which of
+   * a huddle's sounds they hear, once they've turned one off, for an administrator, how many open
+   * reports they see, and the sections: every one for an administrator, or else the ones with a room of
+   * theirs. Null without a valid session.
+>>>>>>> ember/v0.5.0
    */
   async sidebar(credentials: Credentials): Promise<Sidebar | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
+<<<<<<< HEAD
     const [{ rooms, favorites, sharedOrder, suggestions, huddles, blocks, huddleSounds, invitationRoomId, openReports }, account, stay] = await Promise.all([
       this.store.roomsFor(user.id),
       this.joinableAccount(),
       this.stayOf(user.id),
+=======
+    const [{ rooms, favorites, sharedOrder, sections, huddles, blocks, huddleSounds, invitationRoomId, openReports }, account] = await Promise.all([
+      this.store.roomsFor(user.id),
+      this.joinableAccount(),
+>>>>>>> ember/v0.5.0
     ]);
     const invited = invitationRoomId !== null && rooms.some((room) => room.id === invitationRoomId);
     const invitation = account && invited ? { roomId: invitationRoomId, joinCode: account.joinCode } : null;
@@ -3957,8 +4042,13 @@ export class Workspace extends DurableObject<Env> {
       rooms,
       favorites,
       sharedOrder,
+<<<<<<< HEAD
       invitation,
       suggestions: stay ? [] : suggestions,
+=======
+      ...(sections.length > 0 && { sections }),
+      invitation,
+>>>>>>> ember/v0.5.0
       huddles,
       blocks,
       ...(!hearsAllHuddleSounds(huddleSounds) && { huddleSounds }),
@@ -3983,6 +4073,25 @@ export class Workspace extends DurableObject<Env> {
   }
 
   /**
+   * Pauses the notifications of the person `credentials` signs in until `until`, an ISO time, or resumes
+   * them with null, as Slack's Do Not Disturb does: nothing is pushed to them, nor does an invitation into
+   * a huddle ring for them, until then. Everyone's tabs hear of it as the people directory lists them, as
+   * theirs do. Answers them as it lists them then, or null without a valid session. It's one change at a
+   * time, so that the last a tab hears of is the last kept.
+   */
+  async pauseNotifications(credentials: Credentials, until: string | null): Promise<DirectoryUser | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    return this.oneAtATime(async () => {
+      const person = await this.store.pauseNotifications(user.id, until);
+      if (!person) return null;
+      const listed = await this.directoryUser(person);
+      this.broadcast({ type: "user.updated", user: listed });
+      return listed;
+    });
+  }
+
+  /**
    * Dismisses the welcome card for the person `credentials` signs in, for good: their sidebar, on any
    * device, has no invitation from then on, and every tab of theirs hears so. Only administrators are
    * shown the card, but anyone may dismiss it, since that changes nothing but what they're shown.
@@ -3998,19 +4107,107 @@ export class Workspace extends DurableObject<Env> {
 
   /**
    * Puts the rooms in the sidebar of the administrator `credentials` signs in, DMs aside, in the shared
-   * order in the order `roomIds` lists them, answering the rooms they're in that it ranks, in its order:
-   * "forbidden" unless they're an administrator and every room is one they could order, or null without
-   * a valid session. Every sidebar loads again, its own included.
+   * order in the order `layout` lists them, and when it has sections, puts them in its order and each of
+   * those rooms in the section that lists it, or in none, answering the rooms they're in that the order
+   * ranks, in its order, and every section: "forbidden" unless they're an administrator and every room is
+   * one they could order, or null without a valid session. Every sidebar loads again, its own included.
    */
-  async setSharedOrder(credentials: Credentials, roomIds: RoomId[]): Promise<RoomId[] | "forbidden" | null> {
+  async setSharedOrder(credentials: Credentials, layout: RoomLayout): Promise<SavedRoomLayout | "forbidden" | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
     return this.oneAtATime(async () => {
-      const sharedOrder = await this.store.setSharedOrder(user.id, roomIds);
-      if (!sharedOrder) return "forbidden";
+      const saved = await this.store.setSharedOrder(user.id, layout);
+      if (!saved) return "forbidden";
       this.broadcast({ type: "rooms.reordered" });
-      return sharedOrder;
+      return saved;
     });
+  }
+
+  /**
+   * Makes a section named `name`, after the others, as the administrator `credentials` signs in,
+   * answering it: "forbidden" unless they're an administrator, "taken" when a section has that name,
+   * "too many sections" when there are `MAX_SECTIONS`, "blocked words" for a name with a word Blocked
+   * words keeps out, or null without a valid session. Every administrator's sidebar, which has every
+   * section, loads again.
+   */
+  async makeSection(credentials: Credentials, name: string): Promise<Section | "forbidden" | "taken" | "too many sections" | "blocked words" | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    return this.oneAtATime(async () => {
+      if (!(await this.store.isAdministrator(user.id))) return "forbidden";
+      const { section: named, count } = await this.store.sectionNamed(name);
+      if (named) return "taken";
+      if (count >= MAX_SECTIONS) return "too many sections";
+      if (await this.hasBlockedWord(name)) return "blocked words";
+      const section = { id: sortableId(), name };
+      // One change at a time, nothing makes a section between reading them and making this one.
+      await this.store.makeSection(section, new Date().toISOString());
+      this.tell(await this.store.administratorIds(), { type: "rooms.reordered" });
+      return section;
+    });
+  }
+
+  /**
+   * Renames section `id` to `name` as the administrator `credentials` signs in, answering it: "forbidden"
+   * unless they're an administrator, "not found", "taken" when another section has that name, "blocked
+   * words" as for making one, or null without a valid session. Every sidebar loads again once it's
+   * renamed.
+   */
+  async renameSection(credentials: Credentials, id: SectionId, name: string): Promise<Section | "forbidden" | "not found" | "taken" | "blocked words" | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    return this.oneAtATime(async () => {
+      if (!(await this.store.isAdministrator(user.id))) return "forbidden";
+      if (await this.hasBlockedWord(name)) return "blocked words";
+      const renamed = await this.store.renameSection(id, name, new Date().toISOString());
+      if (renamed === "not found" || renamed === "taken") return renamed;
+      if (renamed === "renamed") this.broadcast({ type: "rooms.reordered" });
+      return { id, name };
+    });
+  }
+
+  /**
+   * Deletes section `id` as the administrator `credentials` signs in, leaving its rooms in none,
+   * answering "deleted": "forbidden" unless they're an administrator, "not found", or null without a
+   * valid session. Every sidebar loads again.
+   */
+  async deleteSection(credentials: Credentials, id: SectionId): Promise<"deleted" | "forbidden" | "not found" | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    return this.oneAtATime(async () => {
+      if (!(await this.store.isAdministrator(user.id))) return "forbidden";
+      if (!(await this.store.deleteSection(id))) return "not found";
+      this.broadcast({ type: "rooms.reordered" });
+      return "deleted";
+    });
+  }
+
+  /**
+   * The section `choice` puts a room in as `userId` chooses: a section that's there, or none, or the
+   * one with the name it gives, or else a new one with that name, last, which only an administrator can
+   * make, while there are fewer than `MAX_SECTIONS`, and not with a word Blocked words keeps out.
+   * Answers why not instead. A change one at a time with the others, it's there still when it's saved.
+   */
+  private async chosenSection(choice: SectionChoice, userId: UserId): Promise<ChosenSection | SectionRefusal> {
+    if (choice === null) return { section: null, made: false };
+    if (typeof choice === "string") {
+      const section = await this.store.section(choice);
+      return section ? { section, made: false } : "no such section";
+    }
+    const { section, count } = await this.store.sectionNamed(choice.name);
+    if (section) return { section, made: false };
+    if (!(await this.store.isAdministrator(userId))) return "new sections administrators only";
+    if (count >= MAX_SECTIONS) return "too many sections";
+    if (await this.hasBlockedWord(choice.name)) return "blocked words";
+    return { section: { id: sortableId(), name: choice.name }, made: true };
+  }
+
+  /**
+   * Has the sidebars of every administrator load again, once `chosen` has made a section, since they
+   * list every section, though the room it's made for isn't in theirs.
+   */
+  private async sectionMade(chosen: ChosenSection | null): Promise<void> {
+    if (chosen?.made) this.tell(await this.store.administratorIds(), { type: "rooms.reordered" });
   }
 
   /**
@@ -4409,19 +4606,25 @@ export class Workspace extends DurableObject<Env> {
   }
 
   /**
-   * Creates a room as the person `credentials` signs in: "forbidden" unless they may create rooms,
-   * "blocked words" for a name with a word Blocked words keeps out, or null without a valid session.
-   * Everyone it puts in sees it in their sidebars at once, and nobody else hears of it.
+   * Creates a room as the person `credentials` signs in, in the section it chooses, if any
+   * (`chosenSection`): "forbidden" unless they may create rooms, "blocked words" for a name with a word
+   * Blocked words keeps out, why the section is refused, or null without a valid session. Everyone it
+   * puts in sees it in their sidebars at once, under its section, and nobody else hears of it.
    */
-  async createRoom(credentials: Credentials, room: NewRoom): Promise<SharedRoom | "forbidden" | "blocked words" | null> {
+  async createRoom(credentials: Credentials, room: NewRoom): Promise<SharedRoom | "forbidden" | "blocked words" | SectionRefusal | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
-    if (!(await this.mayCreateRoomsAs(user.id))) return "forbidden";
-    if (await this.hasBlockedWord(room.name)) return "blocked words";
-    const created: SharedRoom = { id: sortableId(), kind: room.kind, name: room.name, icon: room.icon || null };
-    const memberIds = await this.store.createRoom(created, user.id, room.kind === "closed" ? room.memberIds : null, new Date().toISOString());
-    this.tell(memberIds, { type: "room.saved", room: created });
-    return created;
+    return this.oneAtATime(async () => {
+      if (!(await this.mayCreateRoomsAs(user.id))) return "forbidden";
+      if (await this.hasBlockedWord(room.name)) return "blocked words";
+      const chosen = room.section === undefined ? null : await this.chosenSection(room.section, user.id);
+      if (typeof chosen === "string") return chosen;
+      const created: SharedRoom = { id: sortableId(), kind: room.kind, name: room.name, icon: room.icon || null };
+      const memberIds = await this.store.createRoom(created, user.id, room.kind === "closed" ? room.memberIds : null, chosen, new Date().toISOString());
+      this.tell(memberIds, { type: "room.saved", room: created, ...(chosen?.section && { section: chosen.section }) });
+      await this.sectionMade(chosen);
+      return created;
+    });
   }
 
   /**
@@ -4452,13 +4655,16 @@ export class Workspace extends DurableObject<Env> {
   }
 
   /**
-   * What the New room forms list, everyone active who can be put in a room, for the person `credentials`
-   * signs in: "forbidden" unless they may create rooms, or null without a valid session.
+   * What the New room forms list, everyone active who can be put in a room and the sections, for the
+   * person `credentials` signs in: "forbidden" unless they may create rooms, or null without a valid
+   * session.
    */
   async newRoomForm(credentials: Credentials): Promise<NewRoomForm | "forbidden" | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
-    return (await this.mayCreateRoomsAs(user.id)) ? { people: await this.store.activePeople() } : "forbidden";
+    if (!(await this.mayCreateRoomsAs(user.id))) return "forbidden";
+    const [people, sections] = await Promise.all([this.store.activePeople(), this.store.sectionOptions(user.id)]);
+    return { people, sections };
   }
 
   /**
@@ -4467,15 +4673,39 @@ export class Workspace extends DurableObject<Env> {
    * of one room's own room, since that's all they reach. "not found" unless they're in the room, or
    * null without a valid session.
    * the first page of the active people there whose names contain `query`, by name, but the AI agents
-   * kept for administrators, unless they're one. "not found" unless they're in the room, or null without
-   * a valid session.
+   * kept for administrators, unless they're one, and with `special`, the special mentions that notify the
+   * room from them whose names start with `query`. "not found" unless they're in the room, or null
+   * without a valid session.
    */
-  async mentionable(credentials: Credentials, roomId: RoomId | null, query: string): Promise<DirectoryEntry[] | "not found" | null> {
+  async mentionable(credentials: Credentials, roomId: RoomId | null, query: string, special = false): Promise<Mentionable | "not found" | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
     if (roomId !== null && !(await this.store.isMember(roomId, user.id))) return "not found";
+<<<<<<< HEAD
     if (roomId === null) roomId = (await this.stayOf(user.id))?.roomId ?? null;
     return this.store.mentionable(query, roomId, user.id);
+=======
+    const [people, notifying] = await Promise.all([this.store.mentionable(query, roomId, user.id), special && roomId !== null ? this.store.notifyingMentions(roomId, user.id) : []]);
+    return { people, specialMentions: notifying.filter((mention) => mention.startsWith(query.toLowerCase())) };
+  }
+
+  /**
+   * How many people are in room `roomId`, and how many of them, but the person `credentials` signs in,
+   * each special mention that would notify the room from them would notify, as their composer asks before
+   * sending one, @here's those active now: "not found" unless they're in the room, or null without a
+   * valid session.
+   */
+  async notified(credentials: Credentials, roomId: RoomId): Promise<NotifiedCounts | "not found" | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    if (!(await this.store.isMember(roomId, user.id))) return "not found";
+    const [notifying, { everyone, active }] = await Promise.all([
+      this.store.notifyingMentions(roomId, user.id),
+      this.store.notifiedCounts(roomId, user.id, [...this.presence.active()]),
+    ]);
+    const mentions = Object.fromEntries(notifying.map((mention) => [mention, mention === "here" ? active : everyone]));
+    return { members: everyone + 1, mentions };
+>>>>>>> ember/v0.5.0
   }
 
   /**
@@ -4730,7 +4960,11 @@ export class Workspace extends DurableObject<Env> {
   private async deactivate({ id, name, username, bio, mood, role, agent, keptFor }: DirectoryEntry): Promise<DirectoryUser> {
     const now = Date.now();
     const removedAt = new Date(now).toISOString();
+<<<<<<< HEAD
     const removed = await this.directoryUser({ id, name, username, bio, mood, role, status: "deactivated", updatedAt: removedAt, agent, keptFor });
+=======
+    const removed = await this.directoryUser({ id, name, username, bio, role, status: "deactivated", updatedAt: removedAt, agent, keptFor, pausedUntil: null });
+>>>>>>> ember/v0.5.0
     // As when resetting a password, until the database says it queued nothing.
     let queued = true;
     try {
@@ -4811,7 +5045,11 @@ export class Workspace extends DurableObject<Env> {
         }
         if (person.accounts.length > 0) await this.forgetUnlinked();
         for (const { userId, blocks } of deletion.blockers) this.tell([userId], { type: "blocks.changed", blocks });
+<<<<<<< HEAD
         const deleted = { id: person.id, name: DELETED_PERSON_NAME, username: null, bio: null, mood: null, role: "member", status: "deactivated", updatedAt: deletedAt, agent: false, keptFor: null } as const;
+=======
+        const deleted = { id: person.id, name: DELETED_PERSON_NAME, username: null, bio: null, role: "member", status: "deactivated", updatedAt: deletedAt, agent: false, keptFor: null, pausedUntil: null } as const;
+>>>>>>> ember/v0.5.0
         this.broadcast({ type: "user.updated", user: await this.directoryUser(deleted) });
         // As many reports are open as before, but a Reports list loads them again on hearing so.
         if (deletion.reportsCleared) this.tellOpenReports(await this.reports.openByAdministrator());
@@ -5512,18 +5750,21 @@ export class Workspace extends DurableObject<Env> {
    * the server was, `askedAt`: "changed" once someone has saved another address or token meanwhile, as
    * the tools would be another server's, or the new address's token one it never took. An app that's
    * signed in to keeps its address, and takes no token, "signed in": its sign-in is to the server there.
+   * Another address without the token given again is "token stays", whatever the app was when the
+   * change was asked for (`movesItsToken`).
    */
   async changeApp(
     credentials: Credentials,
     appId: AppId,
     changes: AppChanges,
     reread: { read: StoredAppRead; askedAt: AskedAt } | null,
-  ): Promise<App | "changed" | "signed in" | "off" | "forbidden" | "not found" | null> {
+  ): Promise<App | "changed" | "signed in" | "token stays" | "off" | "forbidden" | "not found" | null> {
     return this.administerAgents(credentials, async (user) => {
       const app = await this.store.app(appId);
       if (!app) return "not found";
       if (app.signedIn && ((changes.url !== undefined && changes.url !== app.url) || changes.token !== undefined)) return "signed in";
       if (reread && !isAskedAt(app, reread.askedAt)) return "changed";
+      if (movesItsToken(app, changes)) return "token stays";
       const sealedToken = changes.token === undefined ? undefined : changes.token === "" ? null : await this.sealedAppToken(appId, changes.token);
       const read = reread && { read: reread.read, picks: picksChangedBy(appId, reread.read, await this.store.everyAgentsToolPicks()) };
       await this.store.changeApp(appId, { name: changes.name, url: changes.url, sealedToken, ...read, changedBy: user.id, now: new Date().toISOString() });
@@ -5743,6 +5984,15 @@ export class Workspace extends DurableObject<Env> {
    */
   async callDecider(roomId: RoomId, clickerId: UserId): Promise<{ member: User; administrator: boolean } | null> {
     return this.store.roomMember(roomId, clickerId);
+  }
+
+  /**
+   * `writerId` as they're named now, while they're in room `roomId`, for a message they scheduled there,
+   * which the room sends as theirs only then: null once they've left it, been removed from it, or can't
+   * sign in to Ember.
+   */
+  async scheduledWriter(roomId: RoomId, writerId: UserId): Promise<User | null> {
+    return (await this.store.roomMember(roomId, writerId))?.member ?? null;
   }
 
   /** Whether `agentId` is one tools are picked for: @ember, whether or not it has answered yet, or an agent. */
@@ -6005,8 +6255,13 @@ export class Workspace extends DurableObject<Env> {
    * Someone as the people directory lists them, with their avatar's address, and nothing else known of
    * them, such as their email address, whatever `person` brings.
    */
+<<<<<<< HEAD
   private async directoryUser({ id, name, username, bio, mood, role, status, updatedAt, agent, keptFor }: DirectoryEntry): Promise<DirectoryUser> {
     return (await directoryOf([{ id, name, username, bio, mood, role, status, updatedAt, agent, keptFor }], this.env.SESSION_SECRET))[0]!;
+=======
+  private async directoryUser({ id, name, username, bio, role, status, updatedAt, agent, keptFor, pausedUntil }: DirectoryEntry): Promise<DirectoryUser> {
+    return (await directoryOf([{ id, name, username, bio, role, status, updatedAt, agent, keptFor, pausedUntil }], this.env.SESSION_SECRET))[0]!;
+>>>>>>> ember/v0.5.0
   }
 
   /** The profile of the person `credentials` signs in, or null without a valid session. */
@@ -6276,14 +6531,20 @@ export class Workspace extends DurableObject<Env> {
   /**
    * Makes `changes` to room `roomId` as the person `credentials` signs in, answering the room as it
    * is then: "not found" as for its settings, "forbidden" unless they can change it, "administrators
-   * only" for turning huddles on or off in it unless they're one, "blocked words" for a new name with
-   * a word Blocked words keeps out, though the name it has stays, or null without a valid session.
-   * Anyone it takes out of the room is told to reconnect, and finds it gone, and it leaves their
-   * sidebars. Everyone in it sees it as it is now in theirs, or, when only who's in it changed, the
-   * people it puts in do. A huddle going on in a room it turns huddles off in is left by each tab
-   * that hears so, and ends for whoever is in it still as the room next checks it (`huddlesIn`).
+   * only" for turning huddles on or off in it unless they're one, "mentions administrators only" for
+   * @channel, @here and @everyone likewise, "blocked words" for a new name with
+   * a word Blocked words keeps out, though the name it has stays, why the section it chooses is refused
+   * (`chosenSection`), or null without a valid session. Anyone it takes out of the room is told to
+   * reconnect, and finds it gone, and it leaves their sidebars. Everyone in it sees it as it is now in
+   * theirs, under its section, or, when only who's in it changed, the people it puts in do. A huddle
+   * going on in a room it turns huddles off in is left by each tab that hears so, and ends for whoever is
+   * in it still as the room next checks it (`huddlesIn`).
    */
-  async changeRoom(credentials: Credentials, roomId: RoomId, changes: RoomChanges): Promise<SharedRoom | "not found" | "forbidden" | "administrators only" | "blocked words" | null> {
+  async changeRoom(
+    credentials: Credentials,
+    roomId: RoomId,
+    changes: RoomChanges,
+  ): Promise<SharedRoom | "not found" | "forbidden" | "administrators only" | "mentions administrators only" | "blocked words" | SectionRefusal | null> {
     const user = await this.authenticate(credentials);
     if (!user) return null;
     return this.closingSockets(async () => {
@@ -6291,42 +6552,49 @@ export class Workspace extends DurableObject<Env> {
       if (!found) return "not found";
       if (!found.canAdminister) return "forbidden";
       const allowed = found.room.huddles !== false;
-      // Huddles sent as they are turn nothing on or off, which anyone who can change the room may send.
+      const mentionsAllowed = found.room.channelMentions !== false;
+      // Switches sent as they are turn nothing on or off, which anyone who can change the room may send.
       if (changes.huddles !== undefined && changes.huddles !== allowed && !found.canChangeHuddles) return "administrators only";
+      if (changes.channelMentions !== undefined && changes.channelMentions !== mentionsAllowed && !found.canChangeChannelMentions) {
+        return "mentions administrators only";
+      }
       // Its settings send the name it has with every change.
       if (changes.name && changes.name !== found.room.name && (await this.hasBlockedWord(changes.name))) return "blocked words";
-      const { huddles: _, ...room } = found.room;
+      const chosen = changes.section === undefined ? null : await this.chosenSection(changes.section, user.id);
+      if (typeof chosen === "string") return chosen;
+      // Its settings send the section it's in with every change too, which moves it nowhere.
+      const moved = chosen && (chosen.made || chosen.section?.id !== found.section?.id) ? chosen : null;
+      const { huddles: _, channelMentions: __, ...room } = found.room;
       const changed: SharedRoom = {
         ...room,
         ...(changes.name && { name: changes.name }),
         ...(changes.kind && { kind: changes.kind }),
         ...(changes.icon !== undefined && { icon: changes.icon || null }),
         ...allowingHuddles(changes.huddles ?? allowed),
+        ...allowingChannelMentions(changes.channelMentions ?? mentionsAllowed),
       };
-      if (!changes.name && !changes.kind && changes.icon === undefined && changes.huddles === undefined) return changed;
+      const switched = changes.huddles !== undefined || changes.channelMentions !== undefined;
+      if (!changes.name && !changes.kind && changes.icon === undefined && !switched && !moved) return changed;
       const now = Date.now();
       // As when signing out, until the database says it queued nothing.
       let queued = changes.kind === "closed";
       let saved: SavedRoomChange;
       try {
-        saved = await this.store.changeRoom(roomId, changes, CloseCode.Reconnect, now, new Date(now).toISOString());
+        saved = await this.store.changeRoom(roomId, changes, moved, CloseCode.Reconnect, now, new Date(now).toISOString());
         queued = saved.removedIds.length > 0 || saved.madePrivate;
       } finally {
         if (queued) await this.revocationsQueued(now);
+        // The database may have queued telling the search index who can read it, though its answer was lost.
+        if (changes.kind) await this.wakeAt(now);
       }
-      this.tell(saved.removedIds, { type: "room.gone", roomId });
-      this.tell(saved.roomChanged ? saved.memberIds : saved.addedIds, { type: "room.saved", room: changed });
-      // Whoever it puts in has heard nothing of a huddle going on there.
-      const huddle = saved.addedIds.length > 0 ? await this.store.liveHuddle(roomId) : null;
-      if (huddle) this.tell(saved.addedIds, { type: "room.huddle", roomId, huddle });
-      // The shared order their sidebars have leaves out the rooms they weren't in, so they load it
-      // again.
-      if (saved.ranked) this.tell(saved.addedIds, { type: "rooms.reordered" });
+      await this.tellOfChange(roomId, changed, saved, saved.sectionChanged ? moved!.section : found.section);
+      await this.sectionMade(moved);
       return changed;
     });
   }
 
   /**
+<<<<<<< HEAD
    * Adds a guest of room `roomId`, named `name`, whose stay ends at `until`, for whoever `credentials`
    * signs in as: "not found" as for its settings, "forbidden" unless they can change the room, "taken"
    * for a name one of its guests stays under already, "agent's name" for a name that's an agent's, as
@@ -6417,6 +6685,56 @@ export class Workspace extends DurableObject<Env> {
   /** The stay of the person `userId` as one of the guests of one room, which bounds what they reach, or null while they have none. */
   private async stayOf(userId: UserId): Promise<{ roomId: RoomId } | null> {
     return this.store.guestStayOf(userId);
+=======
+   * Puts the people `change` names in private room `roomId`, and takes those it names out, as the person
+   * `credentials` signs in, leaving everyone else as they are, and answers the room: "not found" as for
+   * its settings, "forbidden" unless they can change it, "open" for a room open to everyone, or null
+   * without a valid session. As with changing the room, whoever it takes out is told to reconnect, and
+   * finds it gone, and the people it puts in see it in their sidebars.
+   */
+  async changeMembers(credentials: Credentials, roomId: RoomId, change: MembersChange): Promise<SharedRoom | "not found" | "forbidden" | "open" | null> {
+    const user = await this.authenticate(credentials);
+    if (!user) return null;
+    return this.closingSockets(async () => {
+      const found = await this.store.roomToChange(roomId, user.id);
+      if (!found) return "not found";
+      if (!found.canAdminister) return "forbidden";
+      if (found.room.kind !== "closed") return "open";
+      if (change.addedIds.length === 0 && change.removedIds.length === 0) return found.room;
+      const now = Date.now();
+      // As when signing out, until the database says it queued nothing.
+      let queued = change.removedIds.length > 0;
+      let saved: SavedRoomChange;
+      try {
+        saved = await this.store.changeMembers(roomId, change, CloseCode.Reconnect, now, new Date(now).toISOString());
+        queued = saved.removedIds.length > 0;
+      } finally {
+        if (queued) await this.revocationsQueued(now);
+      }
+      await this.tellOfChange(roomId, found.room, saved, found.section);
+      return found.room;
+    });
+  }
+
+  /**
+   * Tells whoever a change to room `roomId` took out that it's gone, and everyone in it, or only those it
+   * put in where only who's in it changed, that it's `room` now, in `section`: with any huddle going on
+   * there, which the people it put in have heard nothing of, and the shared order, which their sidebars
+   * have left it out of.
+   */
+  private async tellOfChange(roomId: RoomId, room: SharedRoom, saved: SavedRoomChange, section: Section | null): Promise<void> {
+    this.tell(saved.removedIds, { type: "room.gone", roomId });
+    this.tell(saved.roomChanged || saved.sectionChanged ? saved.memberIds : saved.addedIds, {
+      type: "room.saved",
+      room,
+      ...((section || saved.sectionChanged) && { section }),
+    });
+    // Whoever it puts in has heard nothing of a huddle going on there.
+    const huddle = saved.addedIds.length > 0 ? await this.store.liveHuddle(roomId) : null;
+    if (huddle) this.tell(saved.addedIds, { type: "room.huddle", roomId, huddle });
+    // The shared order their sidebars have leaves out the rooms they weren't in, so they load it again.
+    if (saved.ranked) this.tell(saved.addedIds, { type: "rooms.reordered" });
+>>>>>>> ember/v0.5.0
   }
 
   /**
@@ -6504,31 +6822,59 @@ export class Workspace extends DurableObject<Env> {
   /**
    * Applies the events room `roomId` sends from its log, in order, with `viewerIds`, who is viewing the
    * room as it sends them: a new message marks the room unread for its members who aren't, in a DM
-   * counting it for them, and someone opening it clears their mark. Each event is applied once, however
-   * often it's sent. Whoever's mark or count changes hears of it on their workspace sockets, and nobody
-   * else does. A new message in a DM moves it to the top of everyone's DMs there, its author's too, and
-   * one call's messages move it once. It answers the bots' webhooks each new message is delivered to,
-   * the new messages @ember is to answer and, while Web Push is on, their pushes, for the room to send,
-   * none of them to a guest while `EMBER_GUEST_SIGN_IN` doesn't let guests stay signed in, and the
-   * version of the blocked words, which tells the room whether the list it keeps is still the latest.
+   * counting it for them, and in a room counting it for those it mentions or notifies, and someone opening
+   * it clears their mark. Each event is applied once, however often it's sent. Whoever's mark or count
+   * changes hears of it on their workspace sockets, and nobody else does. A new message in a DM moves it
+   * to the top of everyone's DMs there, its author's too, and one call's messages move it once. It
+   * answers the bots' webhooks each new message is delivered to, the new messages @ember is to answer
+   * and, while Web Push is on, their pushes, for the room to send, none of them to a guest while
+   * `EMBER_GUEST_SIGN_IN` doesn't let guests stay signed in, and the version of the blocked words, which
+   * tells the room whether the list it keeps is still the latest.
    */
   async applyRoomEvents(roomId: RoomId, events: RoomEvent[], viewerIds: UserId[]): Promise<RoomEventAnswer> {
     const { version: blockedWords } = await this.blockedWordsNow();
     if (events.length === 0) return { pushes: [], webhooks: [], asks: [], blockedWords };
     const { on: pushing } = await webPush(this.env);
-    const { marks, active, pushes, webhooks, asks } = await this.store.applyRoomEvents(roomId, events, viewerIds, pushing, guestSignIn(this.env));
+    // @here notifies those who are active, as presence has them now, which pushes and counts its mentions.
+    const activeIds = events.some((event) => event.message?.notifies === "here") ? [...this.presence.active()] : [];
+    const { marks, active, pushes, webhooks, asks } = await this.store.applyRoomEvents(roomId, events, viewerIds, pushing, guestSignIn(this.env), activeIds);
     for (const [userId, mark] of marks) this.tell([userId], mark === null ? { type: "room.read", roomId } : { type: "room.unread", roomId, ...mark });
     if (active) this.tell(active.userIds, { type: "room.active", roomId, at: active.at });
     return { pushes, webhooks, asks, blockedWords };
   }
 
   /**
+<<<<<<< HEAD
    * Whether push subscription `id` is still saved, for someone still active whose stay, if they're a
    * guest of one room, hasn't ended yet, as a room asks just before sending a push that waited its turn,
    * so that one banned, removed, suspended or whose stay has passed meanwhile gets none.
+=======
+   * Whether push subscription `id` is still saved, for someone still active, as a room asks just before
+   * sending a push that waited its turn, so that one banned, removed or suspended meanwhile gets none,
+   * nor one who has paused their notifications since.
+>>>>>>> ember/v0.5.0
    */
   async pushable(id: number): Promise<boolean> {
     return this.store.pushable(id, Date.now());
+  }
+
+  /**
+   * Sends pushes a room has no requests left for, as it sends its own: each once the Workspace has checked
+   * that it may still go, forgetting the subscriptions they find gone. A call is an invocation of its own,
+   * with requests of its own, so a room hands a big room's pushes over a call at a time.
+   */
+  async sendRoomPushes(pushes: Array<MessagePush | InvitationPush>): Promise<void> {
+    const gone = await sendPushes(this.env, pushes, (id) => this.store.pushable(id));
+    if (gone.length > 0) await this.forgetPushSubscriptions(gone);
+  }
+
+  /**
+   * The special mentions that notify room `roomId` when `userId` makes them, for the room to say whom a
+   * message notifies: @here and @channel in a room that isn't a DM, from anyone but an AI agent, and
+   * @everyone too in an open room, from anyone but a guest.
+   */
+  async notifyingMentions(roomId: RoomId, userId: UserId): Promise<SpecialMention[]> {
+    return this.store.notifyingMentions(roomId, userId);
   }
 
   /**
@@ -6640,6 +6986,15 @@ export class Workspace extends DurableObject<Env> {
    */
   async mentionedPeople(ids: UserId[]): Promise<User[]> {
     return this.store.peopleWithIds(ids);
+  }
+
+  /**
+   * The rooms of `ids` that exist, but DMs, for a room naming the rooms a message mentions in its plain
+   * text: an open room by its name, and a private one as "private room", since not everyone who reads
+   * the text, in a notification or a search, is in it.
+   */
+  async mentionedRooms(ids: RoomId[]): Promise<MentionRoom[]> {
+    return (await this.store.mentionedRooms(ids)).map(({ id, name }) => ({ id, name: name ?? PRIVATE_ROOM_NAME }));
   }
 
   /**
@@ -6797,10 +7152,18 @@ export class Workspace extends DurableObject<Env> {
 
   /**
    * Whether room `roomId` is private by now, a DM or a private room, or gone, as an answer asks once it
-   * has searched the room, which may have been made private since the answer began (`roomSearch`).
+   * has read the room, which may have been made private since the answer began (`roomTools`).
    */
   async isPrivateRoom(roomId: RoomId): Promise<boolean> {
     return isPrivate(await this.store.roomKind(roomId));
+  }
+
+  /**
+   * The ids of the first few people named `name`, ignoring the case of ASCII letters, whose messages an
+   * answer's search of a room finds for it (`roomTools`), as a person's name is all its model knows of them.
+   */
+  async peopleNamed(name: string): Promise<UserId[]> {
+    return this.store.peopleNamed(name);
   }
 
   /**
@@ -6953,6 +7316,7 @@ export class Workspace extends DurableObject<Env> {
    * what it owes due for the next run, and the alarm is set all the same.
    */
   override async alarm(): Promise<void> {
+<<<<<<< HEAD
     try {
       const revocations = await this.deliverRevocations((now) => this.store.dueRevocations(now, DELIVERIES_PER_RUN));
       const purges = await this.deliverPurges(DELIVERIES_PER_RUN - revocations);
@@ -6971,6 +7335,15 @@ export class Workspace extends DurableObject<Env> {
     }
     // Reached whatever became of the sweep, so what's left due waits for an alarm that's set, rather
     // than for the next change to wake it.
+=======
+    const revocations = await this.deliverRevocations((now) => this.store.dueRevocations(now, DELIVERIES_PER_RUN));
+    const purges = await this.deliverPurges(DELIVERIES_PER_RUN - revocations);
+    const reindexes = await this.deliverReindexes(DELIVERIES_PER_RUN - revocations - purges);
+    await this.deliverReaders();
+    await this.deletePictures(DELIVERIES_PER_RUN - revocations - purges - reindexes);
+    await this.checkMemberships();
+    await this.checkSsoAccounts();
+>>>>>>> ember/v0.5.0
     await this.scheduleDelivery();
   }
 
@@ -7291,6 +7664,31 @@ export class Workspace extends DurableObject<Env> {
     });
     await this.store.settleReindexes(delivered, failed, Date.now());
     return due.length;
+  }
+
+  /**
+   * Tells the search index who can read the rooms due to have it hear again, as their kind changed, up to
+   * `READERS_PER_RUN` in one call, and forgets each once it has, unless it was queued again meanwhile.
+   * When the index can't be reached, they're tried again later, as a reindex is.
+   */
+  private async deliverReaders(): Promise<void> {
+    const due = await this.store.dueReaders(Date.now(), READERS_PER_RUN);
+    if (due.length === 0) return;
+    try {
+      await searchIndex(this.env).setReadersOf(due.map(({ roomId, readers }) => ({ roomId, readers })));
+    } catch (error) {
+      console.error("Could not tell the search index who can read rooms; trying again later", error);
+      return this.store.settleReaders([], due, Date.now());
+    }
+    await this.store.settleReaders(due, [], Date.now());
+  }
+
+  /**
+   * Who can read each of the rooms `roomIds` names, as the search index asks of the rooms it holds
+   * messages of but hasn't heard about: null for a room there's no longer.
+   */
+  async roomReaders(roomIds: RoomId[]): Promise<RoomReaders[]> {
+    return this.store.roomReaders(roomIds);
   }
 
   /**

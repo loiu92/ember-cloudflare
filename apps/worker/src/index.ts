@@ -37,6 +37,8 @@ import {
   isPasswordTooLong,
   isReservedName,
   isRoomId,
+  isSectionId,
+  MAX_SECTIONS,
   notTakingDirects,
   OPEN_WITH_MEMBERFUL,
   parseAccountChanges,
@@ -47,6 +49,7 @@ import {
   parseFavoriteOrder,
   parseInvolvementChange,
   parseMemberfulDisconnection,
+<<<<<<< HEAD
   parseGuestChange,
   parseNewGuest,
   parseNewApiToken,
@@ -54,6 +57,13 @@ import {
   parseNewDirect,
   parseNewRoom,
   parseNewUserGroup,
+=======
+  parseMembersChange,
+  parseRoomLayout,
+  parseNewDirect,
+  parseNewRoom,
+  parseNotificationsPause,
+>>>>>>> ember/v0.5.0
   parseProfileChanges,
   parseProfileFieldChange,
   parseProfileFieldOrder,
@@ -61,6 +71,7 @@ import {
   parseRoleChange,
   parseSendingDomainCheck,
   parseRoomChanges,
+  parseSectionName,
   parseTurnstileKeysChange,
   parseUserGroupChanges,
   PROFILE_FIELD_ORDER_REFUSED,
@@ -99,12 +110,17 @@ import {
   type MemberfulStatus,
   type NewJoinCode,
   type NewRoomForm,
+  type NotificationsPaused,
+  type NotifiedCounts,
   type PersonAnswer,
   type ProfileAnswer,
   type ProfileField,
   type ReleaseCheck,
   type RoomId,
   type RoomSettings,
+  type SavedRoomLayout,
+  type Section,
+  type SectionId,
   type SendingDomainCheck,
   type SentTestEmail,
   type Sidebar,
@@ -141,6 +157,10 @@ import {
   type ElsewhereConnection,
   type SsoStatus,
 } from "@ember/protocol/sso";
+<<<<<<< HEAD
+=======
+import { mentionPromptItem, specialMentionPromptItem, type SpecialMention } from "@ember/richtext";
+>>>>>>> ember/v0.5.0
 import { isAccountLogoPath, showAccountLogo, storeLogo } from "./account-logo";
 import {
   clientOf,
@@ -149,6 +169,7 @@ import {
   expiredSessionCookie,
   isCrossSite,
   isHttps,
+  isReadFromAnotherSite,
   isSameOriginUpgrade,
   newApiToken,
   newSessionToken,
@@ -251,7 +272,17 @@ import { isFromUnsupportedBrowser, unsupportedBrowserPage } from "./unsupported-
 import { platformOf } from "./user-agent";
 import { versionOf } from "./version";
 import type { SsoProvider } from "./sso-provider";
-import { ACCOUNT_BEFORE_SETUP, CREDENTIALS_HEADER, signInNeededWith, workspace, type OnlyWay, type SignInElsewhere, type YourProfile } from "./workspace";
+import {
+  ACCOUNT_BEFORE_SETUP,
+  CREDENTIALS_HEADER,
+  signInNeededWith,
+  workspace,
+  type Credentials,
+  type OnlyWay,
+  type SectionRefusal,
+  type SignInElsewhere,
+  type YourProfile,
+} from "./workspace";
 
 export { AppConnector } from "./apps/connector";
 export { OutsideAi } from "./outside/endpoint";
@@ -1259,6 +1290,21 @@ async function changeHuddleSounds(request: Request, env: Env): Promise<Response>
 }
 
 /**
+ * `PUT /api/users/me/notifications-pause`, `{ until }`: pauses the signed-in person's notifications until
+ * `until`, an ISO time no more than a week on, or resumes them with null, as the rail's Pause
+ * notifications does, answering them as the people directory lists them then: 422 for a time that has
+ * passed or isn't one.
+ */
+async function pauseNotifications(request: Request, env: Env): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  if (!credentials) return problem(401, "Not signed in");
+  const pause = parseNotificationsPause(await jsonBodyOf(request), Date.now());
+  if (typeof pause === "string") return problem(422, pause);
+  const user = await workspace(env).pauseNotifications(credentials, pause.until);
+  return user ? json({ user } satisfies NotificationsPaused) : problem(401, "Not signed in");
+}
+
+/**
  * `GET /api/huddles`: the huddles that are over in the rooms the signed-in person is in and hasn't
  * hidden, the latest to have started first, which the Huddles page lists.
  */
@@ -1367,8 +1413,13 @@ async function personPage(request: Request, env: Env, pathname: string, userId: 
 /**
  * Whom the mentions prompt offers: the first 20 by name of the active people in `room_id`, or anywhere
  * without one, whose names contain `filter` (or `query`), as `<lexxy-prompt-item>`s, with the AI agents'
+<<<<<<< HEAD
  * badged, @ember's among them, and the workspace's groups after them, each with how many it stands for.
  * A room someone isn't in is 404.
+=======
+ * badged, @ember's among them, and with `special_mentions=1`, as a room's own composer asks, the special
+ * mentions that notify the room whose names start with it (`promptItems`). A room someone isn't in is 404.
+>>>>>>> ember/v0.5.0
  */
 async function mentionable(request: Request, env: Env): Promise<Response> {
   const credentials = await credentialsOf(request, env);
@@ -1377,13 +1428,32 @@ async function mentionable(request: Request, env: Env): Promise<Response> {
   const roomId = present(params.get("room_id"));
   if (roomId !== undefined && !isRoomId(roomId)) return problem(404, ROOM_NOT_FOUND);
   const query = present(params.get("filter")) ?? present(params.get("query")) ?? "";
+<<<<<<< HEAD
   const [people, groups] = await Promise.all([workspace(env).mentionable(credentials, roomId ?? null, query), workspace(env).userGroups(credentials)]);
   if (!people) return problem(401, "Not signed in");
   if (people === "not found") return problem(404, ROOM_NOT_FOUND);
   const items = (await directoryOf(people, env.SESSION_SECRET)).map((person) => mentionPromptItem(person));
   const shown = query === "" ? groups ?? [] : groups?.filter(({ name }) => name.includes(query.toLowerCase())) ?? [];
   items.push(...shown.map((group) => groupPromptItem({ id: group.id, name: group.name }, group.memberIds.length)));
+=======
+  const found = await workspace(env).mentionable(credentials, roomId ?? null, query, params.get("special_mentions") === "1");
+  if (!found) return problem(401, "Not signed in");
+  if (found === "not found") return problem(404, ROOM_NOT_FOUND);
+  const people = (await directoryOf(found.people, env.SESSION_SECRET)).map((person) => mentionPromptItem(person));
+  const items = promptItems(people, found.specialMentions, query);
+>>>>>>> ember/v0.5.0
   return new Response(items.join(""), { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
+}
+
+/**
+ * The mentions prompt's items: the people's, then the special mentions', but for a special mention named
+ * all that's been typed, which comes first, so that typing @here and a space picks it, as Slack's prompt
+ * does, while @c picks someone called Chris.
+ */
+function promptItems(people: string[], specialMentions: SpecialMention[], query: string): string[] {
+  const typed = (mention: SpecialMention) => mention === query.toLowerCase();
+  const items = (mentions: SpecialMention[]) => mentions.map(specialMentionPromptItem);
+  return [...items(specialMentions.filter(typed)), ...people, ...items(specialMentions.filter((mention) => !typed(mention)))];
 }
 
 /** A parameter's value unless it's blank, as Rails' `presence` reads it. */
@@ -1408,7 +1478,78 @@ async function createRoom(request: Request, env: Env): Promise<Response> {
   const created = await workspace(env).createRoom(credentials, room);
   if (!created) return problem(401, "Not signed in");
   if (created === "blocked words") return problem(422, BLOCKED_WORDS_REFUSED);
-  return created === "forbidden" ? problem(403, ROOM_CREATION_FORBIDDEN) : json({ room: created }, { status: 201 });
+  if (created === "forbidden") return problem(403, ROOM_CREATION_FORBIDDEN);
+  return typeof created === "string" ? sectionRefused(created) : json({ room: created }, { status: 201 });
+}
+
+/** What someone hears when they can't make, rename or delete sections. */
+const SECTIONS_FORBIDDEN = "Only administrators can make, rename and delete sections";
+const SECTION_NOT_FOUND = "Section not found";
+const SECTION_NAME_TAKEN = "There's a section with that name already";
+const TOO_MANY_SECTIONS = `There can be at most ${MAX_SECTIONS} sections`;
+
+/** What New room and a room's settings hear when the section they choose for it is refused. */
+function sectionRefused(refusal: SectionRefusal): Response {
+  switch (refusal) {
+    case "no such section":
+      return problem(422, SECTION_NOT_FOUND);
+    case "new sections administrators only":
+      return problem(403, SECTIONS_FORBIDDEN);
+    case "too many sections":
+      return problem(422, TOO_MANY_SECTIONS);
+    case "blocked words":
+      return problem(422, BLOCKED_WORDS_REFUSED);
+  }
+}
+
+/**
+ * The answer to a section's name that doesn't parse: 422, or 403 for anyone but an administrator, who
+ * hears so before the name is checked.
+ */
+async function sectionNameRefused(env: Env, credentials: Credentials, refusal: string): Promise<Response> {
+  const administrator = await workspace(env).canAdminister(credentials);
+  if (administrator === null) return problem(401, "Not signed in");
+  return administrator ? problem(422, refusal) : problem(403, SECTIONS_FORBIDDEN);
+}
+
+/** Makes a section, after the others, as New section in Rooms and permissions does, answering 201 with it. */
+async function makeSection(request: Request, env: Env): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  if (!credentials) return problem(401, "Not signed in");
+  const named = parseSectionName(await jsonBodyOf(request));
+  if (typeof named === "string") return sectionNameRefused(env, credentials, named);
+  const section = await workspace(env).makeSection(credentials, named.name);
+  if (!section) return problem(401, "Not signed in");
+  if (section === "forbidden") return problem(403, SECTIONS_FORBIDDEN);
+  if (section === "taken") return problem(409, SECTION_NAME_TAKEN);
+  if (section === "too many sections") return problem(422, TOO_MANY_SECTIONS);
+  if (section === "blocked words") return problem(422, BLOCKED_WORDS_REFUSED);
+  return json({ section } satisfies { section: Section }, { status: 201 });
+}
+
+/** Renames a section, as its Rename in Rooms and permissions does, answering it. */
+async function renameSection(request: Request, env: Env, id: SectionId): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  if (!credentials) return problem(401, "Not signed in");
+  const named = parseSectionName(await jsonBodyOf(request));
+  if (typeof named === "string") return sectionNameRefused(env, credentials, named);
+  const section = await workspace(env).renameSection(credentials, id, named.name);
+  if (!section) return problem(401, "Not signed in");
+  if (section === "forbidden") return problem(403, SECTIONS_FORBIDDEN);
+  if (section === "not found") return problem(404, SECTION_NOT_FOUND);
+  if (section === "taken") return problem(409, SECTION_NAME_TAKEN);
+  if (section === "blocked words") return problem(422, BLOCKED_WORDS_REFUSED);
+  return json({ section } satisfies { section: Section });
+}
+
+/** Deletes a section, as its Delete in Rooms and permissions does, leaving its rooms in none, answering 204. */
+async function deleteSection(request: Request, env: Env, id: SectionId): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  const deleted = credentials && (await workspace(env).deleteSection(credentials, id));
+  if (!deleted) return problem(401, "Not signed in");
+  if (deleted === "forbidden") return problem(403, SECTIONS_FORBIDDEN);
+  if (deleted === "not found") return problem(404, SECTION_NOT_FOUND);
+  return new Response(null, { status: 204 });
 }
 
 /**
@@ -1438,6 +1579,14 @@ async function newRoomForm(request: Request, env: Env): Promise<Response> {
   return form === "forbidden" ? problem(403, ROOM_CREATION_FORBIDDEN) : json(form satisfies NewRoomForm);
 }
 
+/** How many people a room holds, and how many each special mention the asker may use would notify there, for its members. */
+async function notified(request: Request, env: Env, roomId: RoomId): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  const counts = credentials && (await workspace(env).notified(credentials, roomId));
+  if (!counts) return problem(401, "Not signed in");
+  return counts === "not found" ? problem(404, ROOM_NOT_FOUND) : json(counts satisfies NotifiedCounts);
+}
+
 /** A room's settings page, for its members, read-only for those who can't change it. */
 async function roomSettings(request: Request, env: Env, roomId: RoomId): Promise<Response> {
   const credentials = await credentialsOf(request, env);
@@ -1448,8 +1597,8 @@ async function roomSettings(request: Request, env: Env, roomId: RoomId): Promise
 
 /**
  * Changes a room, as its settings page saves it. Someone who can't change it hears so before anything
- * they sent is checked, and whoever would turn huddles on or off in it hears that only an administrator
- * can, unless they're one.
+ * they sent is checked, and whoever would turn huddles, or @channel, @here and @everyone, on or off in it
+ * hears that only an administrator can, unless they're one.
  */
 async function changeRoom(request: Request, env: Env, roomId: RoomId): Promise<Response> {
   const credentials = await credentialsOf(request, env);
@@ -1461,8 +1610,28 @@ async function changeRoom(request: Request, env: Env, roomId: RoomId): Promise<R
   if (room === "not found") return problem(404, ROOM_NOT_FOUND);
   if (room === "forbidden") return problem(403, "Only administrators and the room's creator can change it");
   if (room === "administrators only") return problem(403, "Only administrators can turn huddles on or off in a room");
+  if (room === "mentions administrators only") return problem(403, "Only administrators can turn @channel, @here and @everyone on or off in a room");
   if (room === "blocked words") return problem(422, BLOCKED_WORDS_REFUSED);
+  if (typeof room === "string") return sectionRefused(room);
   return typeof changes === "string" ? problem(422, changes) : json({ room });
+}
+
+/**
+ * Puts people in a private room, or takes them out, as /invite and /remove do, leaving everyone else as
+ * they are. As with changing a room, someone who can't change it hears so before anything they sent is
+ * checked.
+ */
+async function changeMembers(request: Request, env: Env, roomId: RoomId): Promise<Response> {
+  const credentials = await credentialsOf(request, env);
+  if (!credentials) return problem(401, "Not signed in");
+  const change = parseMembersChange(await jsonBodyOf(request));
+  // A change that doesn't parse changes nothing, but the room is still checked first.
+  const room = await workspace(env).changeMembers(credentials, roomId, typeof change === "string" ? { addedIds: [], removedIds: [] } : change);
+  if (!room) return problem(401, "Not signed in");
+  if (room === "not found") return problem(404, ROOM_NOT_FOUND);
+  if (room === "forbidden") return problem(403, "Only administrators and the room's creator can change it");
+  if (room === "open") return problem(409, "Everyone is in an open room, so nobody can be put in it or taken out");
+  return typeof change === "string" ? problem(422, change) : json({ room });
 }
 
 /**
@@ -1653,23 +1822,23 @@ const SHARED_ORDER_FORBIDDEN = "Only administrators can put rooms in order for e
 
 /**
  * Puts the rooms in the signed-in administrator's sidebar in the shared order, as saving it on workspace
- * settings does, answering the rooms they're in that it ranks: 400 for a list it can't read, and 403 for
- * anyone but an administrator, or a list naming a room outside their sidebar. An empty list clears the
- * order.
+ * settings does, and the sections in order, with their rooms, when it sends them, answering the rooms
+ * they're in that the order ranks and every section: 400 for a layout it can't read, and 403 for anyone
+ * but an administrator, or a list naming a room outside their sidebar. An empty list clears the order.
  */
 async function setSharedOrder(request: Request, env: Env): Promise<Response> {
   const credentials = await credentialsOf(request, env);
   if (!credentials) return problem(401, "Not signed in");
-  const roomIds = parseSharedOrder(await jsonBodyOf(request));
+  const layout = parseRoomLayout(await jsonBodyOf(request));
   // Someone who isn't an administrator hears so before the list is checked.
-  if (typeof roomIds === "string") {
+  if (typeof layout === "string") {
     const administrator = await workspace(env).canAdminister(credentials);
     if (administrator === null) return problem(401, "Not signed in");
-    return administrator ? problem(400, roomIds) : problem(403, SHARED_ORDER_FORBIDDEN);
+    return administrator ? problem(400, layout) : problem(403, SHARED_ORDER_FORBIDDEN);
   }
-  const sharedOrder = await workspace(env).setSharedOrder(credentials, roomIds);
-  if (!sharedOrder) return problem(401, "Not signed in");
-  return sharedOrder === "forbidden" ? problem(403, SHARED_ORDER_FORBIDDEN) : json({ sharedOrder } satisfies { sharedOrder: RoomId[] });
+  const saved = await workspace(env).setSharedOrder(credentials, layout);
+  if (!saved) return problem(401, "Not signed in");
+  return saved === "forbidden" ? problem(403, SHARED_ORDER_FORBIDDEN) : json(saved satisfies SavedRoomLayout);
 }
 
 /** A tab's workspace socket, which the Workspace lets in itself, as the session the request's cookie names. */
@@ -1783,6 +1952,7 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (pathname === "/api/account/custom_styles" && request.method === "GET") return () => customStyles(request, env);
   if (pathname === "/api/account/custom_styles" && request.method === "PATCH") return () => changeCustomStyles(request, env);
   if (pathname === "/api/account/room_order" && request.method === "PUT") return () => setSharedOrder(request, env);
+<<<<<<< HEAD
   if (pathname === "/api/account/profile_fields" && request.method === "GET") return () => listProfileFields(request, env);
   if (pathname === "/api/account/profile_fields" && request.method === "POST") return () => addProfileField(request, env);
   // Before a field's id, which "order" could name.
@@ -1790,6 +1960,13 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   const profileField = pathname.match(/^\/api\/account\/profile_fields\/([^/]+)$/);
   if (profileField && request.method === "PATCH") return () => changeProfileField(request, env, profileField[1]!);
   if (profileField && request.method === "DELETE") return () => removeProfileField(request, env, profileField[1]!);
+=======
+  if (pathname === "/api/account/sections" && request.method === "POST") return () => makeSection(request, env);
+  // A section's id never needs percent-encoding either, so an encoded segment names none.
+  const section = pathname.match(/^\/api\/account\/sections\/([^/]+)$/);
+  if (section && request.method === "PATCH") return () => (isSectionId(section[1]!) ? renameSection(request, env, section[1]!) : problem(404, SECTION_NOT_FOUND));
+  if (section && request.method === "DELETE") return () => (isSectionId(section[1]!) ? deleteSection(request, env, section[1]!) : problem(404, SECTION_NOT_FOUND));
+>>>>>>> ember/v0.5.0
   // The ids of people who can be active never need percent-encoding, so an encoded segment can't name one.
   const person = pathname.match(/^\/api\/account\/users\/([^/]+)$/);
   if (person && request.method === "PATCH") return () => changeRole(request, env, person[1]!);
@@ -1845,6 +2022,7 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   if (pathname === "/api/users/me" && request.method === "DELETE") return () => deleteAccount(request, env);
   if (pathname === "/api/users/me/assistant" && request.method === "PATCH") return () => changeYourAssistant(request, env);
   if (pathname === "/api/users/me/huddle-sounds" && request.method === "PATCH") return () => changeHuddleSounds(request, env);
+  if (pathname === "/api/users/me/notifications-pause" && request.method === "PUT") return () => pauseNotifications(request, env);
   if (pathname === "/api/huddles" && request.method === "GET") return () => pastHuddles(request, env);
   const ownAppSignIn = pathname.match(/^\/api\/users\/me\/apps\/([^/]+)\/sign-in$/);
   if (ownAppSignIn && request.method === "POST") return () => beginOwnAppSignIn(request, env, ownAppSignIn[1]!);
@@ -1923,6 +2101,8 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
   const huddleInvitation = pathname.match(/^\/api\/rooms\/([^/]+)\/huddle\/invitation$/);
   if (huddleInvitation && request.method === "DELETE")
     return () => (isRoomId(huddleInvitation[1]!) ? answerHuddleInvitation(request, env, huddleInvitation[1]!) : problem(404, ROOM_NOT_FOUND));
+  const notifiedBy = pathname.match(/^\/api\/rooms\/([^/]+)\/notified$/);
+  if (notifiedBy && request.method === "GET") return () => (isRoomId(notifiedBy[1]!) ? notified(request, env, notifiedBy[1]!) : problem(404, ROOM_NOT_FOUND));
   const settings = pathname.match(/^\/api\/rooms\/([^/]+)\/settings$/);
   if (settings && request.method === "GET") return () => (isRoomId(settings[1]!) ? roomSettings(request, env, settings[1]!) : problem(404, ROOM_NOT_FOUND));
   const favorite = pathname.match(/^\/api\/rooms\/([^/]+)\/favorite$/);
@@ -1932,6 +2112,7 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
     return () => (isRoomId(involvement[1]!) ? setInvolvement(request, env, involvement[1]!) : problem(404, ROOM_NOT_FOUND));
   const membership = pathname.match(/^\/api\/rooms\/([^/]+)\/membership$/);
   if (membership && request.method === "DELETE") return () => (isRoomId(membership[1]!) ? leaveRoom(request, env, membership[1]!) : problem(404, ROOM_NOT_FOUND));
+<<<<<<< HEAD
   const guests = pathname.match(/^\/api\/rooms\/([^/]+)\/guests$/);
   if (guests && request.method === "POST") return () => addGuest(request, env, guests[1]!);
   const guest = pathname.match(/^\/api\/rooms\/([^/]+)\/guests\/([^/]+)$/);
@@ -1941,6 +2122,10 @@ function apiAction(request: Request, env: Env, pathname: string): (() => Respons
     if (request.method === "PUT") return () => (isRoomId(roomId) ? extendGuestStay(request, env, roomId, userId) : problem(404, ROOM_NOT_FOUND));
     if (request.method === "DELETE") return () => (isRoomId(roomId) ? endGuestStay(request, env, roomId, userId) : problem(404, ROOM_NOT_FOUND));
   }
+=======
+  const members = pathname.match(/^\/api\/rooms\/([^/]+)\/members$/);
+  if (members && request.method === "PATCH") return () => (isRoomId(members[1]!) ? changeMembers(request, env, members[1]!) : problem(404, ROOM_NOT_FOUND));
+>>>>>>> ember/v0.5.0
   const uploads = pathname.match(/^\/api\/rooms\/([^/]+)\/uploads$/);
   if (uploads && request.method === "POST") return () => (isRoomId(uploads[1]!) ? startUpload(request, env, uploads[1]!) : problem(404, ROOM_NOT_FOUND));
   // A file's key never needs percent-encoding either, so an encoded segment names no upload.
@@ -2007,9 +2192,16 @@ async function route(request: Request, env: Env, pathname: string): Promise<Resp
   if (write && action && (await isFromBannedAddress(request, env))) return tooManyRequests();
   // Then: a browser too old for the app has nothing to sign in to.
   if (isFromUnsupportedBrowser(request)) return unsupportedBrowserPage(request, env);
+<<<<<<< HEAD
   // The Slack-compatible Web API's methods are refused as its envelope says, for a token only its bot
   // has: what another site's page can't send, so its requests aren't refused as its own would be.
   if (write && pathname.startsWith("/api/") && !isSlackWebApiPath(pathname) && isCrossSite(request)) return problem(422, "Requests from other sites are refused");
+=======
+  if (write && pathname.startsWith("/api/") && isCrossSite(request)) return problem(422, "Requests from other sites are refused");
+  // Nor can another site's page read the API, but for a socket's upgrade, which is checked where it's answered.
+  const upgrading = request.headers.get("Upgrade") === "websocket";
+  if (!write && !upgrading && pathname.startsWith("/api/") && isReadFromAnotherSite(request)) return problem(422, "Requests from other sites are refused");
+>>>>>>> ember/v0.5.0
   if (action) return action();
   if (pathname.startsWith("/api/")) return problem(404, "Not found");
   if (pathname === MEMBERFUL_SIGN_IN_PATH) return startMemberfulSignIn(request, env);

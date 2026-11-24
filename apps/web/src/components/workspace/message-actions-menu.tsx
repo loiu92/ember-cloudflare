@@ -8,8 +8,12 @@ import { ShareButton } from "@/components/share-button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { mentionedPerson, PeopleContext, useNameOf, useNameOfGroup } from "@/hooks/use-directory";
 import { useMediaQuery } from "@/hooks/use-media-query";
+<<<<<<< HEAD
 import { useSaver } from "@/hooks/use-saves";
 import { useShortcuts } from "@/hooks/use-shortcuts";
+=======
+import { RoomsContext } from "@/hooks/use-rooms";
+>>>>>>> ember/v0.5.0
 import { permalinkOf } from "@/hooks/use-route";
 import { copyWithSuccess } from "@/lib/clipboard";
 import { replyQuote } from "@/lib/messages";
@@ -746,13 +750,18 @@ interface QuoteButtonProps extends ComponentProps<"button"> {
  */
 function QuoteButton({ message, nodes, onQuote, onClick, ...props }: QuoteButtonProps) {
   const people = useContext(PeopleContext);
+  const rooms = useContext(RoomsContext);
   const nameOf = useNameOf();
   const nameOfGroup = useNameOfGroup();
   const quote = (event: MouseEvent<HTMLButtonElement>) => {
     onClick?.(event);
     const link = new URL(permalinkOf(message), document.baseURI).href;
     const mentioned = (userId: string) => mentionedPerson(people, message.mentions, userId)?.name ?? UNKNOWN_PERSON;
+<<<<<<< HEAD
     onQuote(replyQuote(nodes, nameOf(message.creator), link, mentioned, (groupId) => nameOfGroup(groupId) ?? UNKNOWN_PERSON));
+=======
+    onQuote(replyQuote(nodes, nameOf(message.creator), link, mentioned, (roomId) => rooms?.get(roomId)));
+>>>>>>> ember/v0.5.0
   };
   return <button type="button" onClick={quote} {...props} />;
 }

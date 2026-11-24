@@ -1,11 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { prepareBody, writtenBody } from "./body";
+<<<<<<< HEAD
 import { editableBody, groupIdsIn, groupIdFromSgid, groupPromptItem, mentionContent, mentionedUsers, mentionGroupContent, mentionGroupSgid, mentionPromptItem, mentionSgid, userIdFromSgid, userIdsIn, writtenMentions, type MentionCard } from "./mentions";
+=======
+import {
+  editableBody,
+  mentionContent,
+  mentionedUsers,
+  mentionPromptItem,
+  mentionSgid,
+  mentionsIn,
+  specialMentionContent,
+  specialMentionPromptItem,
+  specialMentionsAsText,
+  userIdFromSgid,
+  userIdsIn,
+  writtenMentions,
+  type MentionCard,
+} from "./mentions";
+>>>>>>> ember/v0.5.0
 import { parseHtml } from "./parse";
 import { testGroupId, testGroups, testUserId as id, testUsers } from "./testing/users";
 
 const { users, resolve } = testUsers("David", "Jason");
 const mention = (n: number) => `<action-text-attachment content-type="application/vnd.campfire.mention" sgid="${mentionSgid(id(n))}"></action-text-attachment>`;
+const special = (name: string) => `<action-text-attachment content-type="application/vnd.campfire.mention" sgid="${name}"></action-text-attachment>`;
 const contentAttachment = (content: string) =>
   `<action-text-attachment content-type="text/html" content="${content.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></action-text-attachment>`;
 
@@ -42,6 +61,13 @@ describe("How mentions look", () => {
     expect(userIdsIn(parseHtml, `<p>${id(9)} <a href="${id(9)}">x</a></p>`)).toEqual([]);
   });
 
+  it("lists the special mentions a body's attachments make apart from its users, nested ones included", () => {
+    const body = `<p>${special("channel")}${mention(2)}${special("channel")}${contentAttachment(special("here"))}${special("everyone!")}${special("everyone")}</p>`;
+    expect(mentionsIn(parseHtml, body)).toEqual({ userIds: [id(2)], specialMentions: ["channel", "here", "everyone"] });
+    expect(userIdsIn(parseHtml, body)).toEqual([id(2)]);
+    expect(mentionsIn(parseHtml, "<p>@here</p>")).toEqual({ userIds: [], specialMentions: [] });
+  });
+
   it("reads the users' ids as the parser does, character references and all", () => {
     // The first character, written as a reference
     const encoded = (n: number) => `<action-text-attachment sgid="&#${id(n).charCodeAt(0)};${id(n).slice(1)}"></action-text-attachment>`;
@@ -68,6 +94,7 @@ describe("How mentions look", () => {
     expect(editableBody(parseHtml, "<p>Hi <strong>all</strong></p>", () => david, "")).toBe("<p>Hi <strong>all</strong></p>");
   });
 
+<<<<<<< HEAD
   it("opens a stored body for editing with a group's mention content, dropping one of a group unknown", () => {
     const design = { id: testGroupId(1), name: "Design", group: true as const };
     const stored = `<p>Hi <action-text-attachment content-type="application/vnd.campfire.group-mention" sgid="${mentionGroupSgid(design.id)}"></action-text-attachment></p>`;
@@ -92,6 +119,24 @@ describe("How mentions look", () => {
     const contentAttachment = (inner: string) => `<action-text-attachment content-type="text/html" content="${inner.replaceAll("&", "&amp;").replaceAll('"', "&quot;")}"></action-text-attachment>`;
     expect(groupIdsIn(parseHtml, `<p>${mention(1)}${group(1)}${contentAttachment(group(2))}</p>`)).toEqual([testGroupId(1), testGroupId(2)]);
     expect(userIdsIn(parseHtml, `<p>${mention(1)}${group(1)}${contentAttachment(mention(2))}</p>`)).toEqual([id(1), id(2)]);
+=======
+  it("opens a special mention for editing with the content that names it, whoever's known", () => {
+    const content = specialMentionContent("here").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+    expect(editableBody(parseHtml, `<p>${special("here")}</p>`, () => undefined, "")).toBe(
+      `<p><action-text-attachment content-type="application/vnd.campfire.mention" sgid="here" content="${content}"></action-text-attachment></p>`,
+    );
+  });
+
+  it("keeps the special mentions it's told were refused as the text they show, and the rest as they are", () => {
+    const body = `<p>${special("here")} and ${special("channel")}, ${mention(1)} and ${special("here")}</p>`;
+    expect(specialMentionsAsText(parseHtml, body, ["here"])).toBe(`<p>@here and ${special("channel")}, ${mention(1)} and @here</p>`);
+    const kept = specialMentionsAsText(parseHtml, body, ["here", "channel", "everyone"]);
+    expect(kept).toBe(`<p>@here and @channel, ${mention(1)} and @here</p>`);
+    expect(specialMentionsAsText(parseHtml, body, [])).toBe(body);
+    expect(specialMentionsAsText(parseHtml, "<p>@here</p>", ["here"])).toBe("<p>@here</p>");
+    // Which stores as it is, its plain text as it was.
+    expect(prepareBody(parseHtml, kept, resolve)).toEqual({ ...prepareBody(parseHtml, body, resolve), html: kept, specialMentions: [] });
+>>>>>>> ember/v0.5.0
   });
 
   it("skips what's past the parser's limits", () => {
@@ -137,6 +182,7 @@ describe("@-mention people", () => {
 `);
   });
 
+<<<<<<< HEAD
   it("offers a group after the people, with how many it stands for, and the mention picking it writes", () => {
     expect(groupPromptItem({ id: testGroupId(1), name: `Design & code`, group: true }, 3)).toBe(`<lexxy-prompt-item search="Design &amp; code" sgid="${mentionGroupSgid(testGroupId(1))}">
   <template type="menu"><span class="autocomplete__item"><span class="autocompletable__name">Design &amp; code</span> <span class="autocompletable__badge">3 members</span></span></template>
@@ -144,6 +190,18 @@ describe("@-mention people", () => {
 </lexxy-prompt-item>
 `);
     expect(groupPromptItem({ id: testGroupId(1), name: "One", group: true }, 1)).toContain('<span class="autocompletable__badge">1 member</span>');
+=======
+  it("offers @here, @channel and @everyone as Slack's prompt does, by name and what they do, with the mention picking one writes", () => {
+    expect(specialMentionContent("channel")).toBe('<span class="mention mention--special" sgid="channel">@channel</span>');
+    expect(specialMentionPromptItem("here")).toBe(`<lexxy-prompt-item search="here" sgid="here">
+  <template type="menu"><span class="autocomplete__item"><span class="autocompletable__at" aria-hidden="true"></span><span class="autocompletable__name">@here</span> <span class="autocompletable__description">Notify everyone active in this room</span></span></template>
+  <template type="editor">${specialMentionContent("here")}</template>
+</lexxy-prompt-item>
+`);
+    expect(specialMentionPromptItem("everyone")).toContain(
+      '<span class="autocompletable__name">@everyone</span> <span class="autocompletable__description">Notify everyone in the workspace</span>',
+    );
+>>>>>>> ember/v0.5.0
   });
 
   it("badges an agent after its name in the prompt, but not in the mention picking it writes", () => {

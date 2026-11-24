@@ -90,11 +90,24 @@ import sessionAddresses from "../migrations/0076_session_addresses.sql";
 import botRooms from "../migrations/0077_bot_rooms.sql";
 import clearedReports from "../migrations/0078_cleared_reports.sql";
 import sso from "../migrations/0079_sso.sql";
+<<<<<<< HEAD
 import apiTokens from "../migrations/0092_tokens.sql";
+=======
+import pendingReaders from "../migrations/0080_pending_readers.sql";
+import sidebarSections from "../migrations/0081_sidebar_sections.sql";
+import messageNotifies from "../migrations/0082_message_notifies.sql";
+import roomChannelMentions from "../migrations/0083_room_channel_mentions.sql";
+import waitingCallAskers from "../migrations/0084_waiting_call_askers.sql";
+import membershipMentionCounts from "../migrations/0085_membership_mention_counts.sql";
+import notificationsPausedUntil from "../migrations/0086_notifications_paused_until.sql";
+import scheduledMessages from "../migrations/0087_scheduled_messages.sql";
+>>>>>>> ember/v0.5.0
 import searchIndex from "../search-migrations/0001_search_index.sql";
 import searchResults from "../search-migrations/0002_search_results.sql";
 import searchFilters from "../search-migrations/0003_search_filters.sql";
 import searchFiltersByRoom from "../search-migrations/0004_search_filters_by_room.sql";
+import searchReaders from "../search-migrations/0005_search_readers.sql";
+import searchRekeys from "../search-migrations/0006_search_rekeys.sql";
 
 /**
  * The kind of Durable Object whose tables a migration creates or changes. On DO SQLite each object
@@ -195,6 +208,7 @@ export const MIGRATIONS: Migration[] = [
   { name: "0077_bot_rooms.sql", scope: "workspace", sql: botRooms },
   { name: "0078_cleared_reports.sql", scope: "workspace", sql: clearedReports },
   { name: "0079_sso.sql", scope: "workspace", sql: sso },
+<<<<<<< HEAD
   { name: "0080_pins.sql", scope: "room", sql: pins },
   { name: "0081_user_groups.sql", scope: "workspace", sql: userGroups },
   { name: "0082_dnd.sql", scope: "workspace", sql: dnd },
@@ -208,6 +222,16 @@ export const MIGRATIONS: Migration[] = [
   { name: "0090_reminder_pushes.sql", scope: "workspace", sql: reminderPushes },
   { name: "0091_shortcuts.sql", scope: "workspace", sql: shortcuts },
   { name: "0092_tokens.sql", scope: "workspace", sql: apiTokens },
+=======
+  { name: "0080_pending_readers.sql", scope: "workspace", sql: pendingReaders },
+  { name: "0081_sidebar_sections.sql", scope: "workspace", sql: sidebarSections },
+  { name: "0082_message_notifies.sql", scope: "room", sql: messageNotifies },
+  { name: "0083_room_channel_mentions.sql", scope: "workspace", sql: roomChannelMentions },
+  { name: "0084_waiting_call_askers.sql", scope: "room", sql: waitingCallAskers },
+  { name: "0085_membership_mention_counts.sql", scope: "workspace", sql: membershipMentionCounts },
+  { name: "0086_notifications_paused_until.sql", scope: "workspace", sql: notificationsPausedUntil },
+  { name: "0087_scheduled_messages.sql", scope: "room", sql: scheduledMessages },
+>>>>>>> ember/v0.5.0
 ];
 
 /**
@@ -221,6 +245,8 @@ export const SEARCH_MIGRATIONS: Migration[] = [
   { name: "0002_search_results.sql", scope: "search", sql: searchResults },
   { name: "0003_search_filters.sql", scope: "search", sql: searchFilters },
   { name: "0004_search_filters_by_room.sql", scope: "search", sql: searchFiltersByRoom },
+  { name: "0005_search_readers.sql", scope: "search", sql: searchReaders },
+  { name: "0006_search_rekeys.sql", scope: "search", sql: searchRekeys },
 ];
 
 /**

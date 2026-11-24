@@ -1,5 +1,11 @@
+<<<<<<< HEAD
 import { useEffect, useEffectEvent, useImperativeHandle, useRef, useState, type Ref } from "react";
 import type { Favorites, Invitation, Involvement, Me, User } from "@ember/protocol";
+=======
+import { useEffect, useEffectEvent, useImperativeHandle, useMemo, useRef, type Ref } from "react";
+import type { Favorites, Invitation, Involvement, Me, SidebarRoom, User } from "@ember/protocol";
+import { useFlash } from "@/components/flash";
+>>>>>>> ember/v0.5.0
 import { MainContent } from "@/components/main-content";
 import { useNameOf } from "@/hooks/use-directory";
 import { useGivingBack } from "@/hooks/use-giving-back";
@@ -7,7 +13,12 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useMessageEditors } from "@/hooks/use-message-editors";
 import { usePins } from "@/hooks/use-pins";
 import { useRoom } from "@/hooks/use-room";
+<<<<<<< HEAD
 import { navigate, roomPath, useVisit } from "@/hooks/use-route";
+=======
+import { useVisit } from "@/hooks/use-route";
+import { useSlashCommands } from "@/hooks/use-slash-commands";
+>>>>>>> ember/v0.5.0
 import { useTitle } from "@/hooks/use-title";
 import type { Room } from "@/lib/api";
 import { roomName } from "@/lib/directs";
@@ -15,7 +26,8 @@ import { rememberLastRoom } from "@/lib/last-room";
 import { newestWrittenBy } from "@/lib/messages";
 import type { RoomAnswer } from "@/lib/room-list";
 import { isPending } from "@/lib/room-state";
-import { Composer, RoomDeleted, type ComposerHandle } from "./composer";
+import { sendAtLabel } from "@/lib/schedule-times";
+import { Composer, RoomDeleted, type ComposerHandle, type ComposerScheduling } from "./composer";
 import { MessageList } from "./message-list";
 import { PinnedPanel } from "./pinned-panel";
 import { RoomHeader } from "./room-header";
@@ -56,6 +68,7 @@ interface Props {
   involvement: Involvement;
   /** When the room was marked unread as of when it was opened, which the timeline draws a New line at, or null. */
   newSince?: string | null;
+<<<<<<< HEAD
   /** Whether the Saved pane covers the room, which leaves it nothing to reach and keeps it from counting as seen. */
   savedCovered?: boolean;
   /** Whether the Saved pane shows beside the room, which the Pinned panel's column is then not to take. */
@@ -63,7 +76,16 @@ interface Props {
   /** Called when the Pinned panel opens, so the Saved pane sharing its column closes. */
   onPinsOpened?: () => void;
   /** Called as its bell saves this person's level in the room, with what gives the room the level the server answers. */
+=======
+  /** Called as its bell saves this person's level in the room, or a command changes a room, with what gives the room what the server answers. */
+>>>>>>> ember/v0.5.0
   askForRoom: () => (answer: RoomAnswer) => void;
+  /** This person's rooms, as their sidebar has them, which commands can name. */
+  rooms: SidebarRoom[];
+  /** Opens New direct message, for /dm, giving focus back to `opener` as it closes. */
+  onOpenDirects: (opener: HTMLElement | null) => void;
+  /** Opens the keyboard shortcuts, for /shortcuts. */
+  onOpenShortcuts: () => void;
   onSessionChanged: (me: Me | null) => void;
   /** Says why the room's bell couldn't save a level, as the workspace's alerts do. */
   onFailed: (error: unknown) => void;
@@ -77,9 +99,44 @@ export interface RoomViewHandle {
   focusComposer(): void;
 }
 
+<<<<<<< HEAD
 export function RoomView({ room, messageId, threadId, replyId, invitation, onDismissInvitation, me, favorite, gone, onStarred, involvement, newSince = null, savedCovered = false, savedShown = false, onPinsOpened, askForRoom, onSessionChanged, onFailed, onGone, ref }: Props) {
   const { state, frames, postMessage, postFiles, runCommand, typing, loadOlder, loadNewer, jump, messageActions, dismissNotice, givenBack } = useRoom(room.id, me, onSessionChanged, messageId, !savedCovered);
   const { pins, pinnedIds, listed, refresh } = usePins(room.id, frames);
+=======
+export function RoomView({
+  room,
+  messageId,
+  threadId,
+  replyId,
+  invitation,
+  onDismissInvitation,
+  me,
+  favorite,
+  gone,
+  onStarred,
+  involvement,
+  newSince = null,
+  askForRoom,
+  rooms,
+  onOpenDirects,
+  onOpenShortcuts,
+  onSessionChanged,
+  onFailed,
+  onGone,
+  ref,
+}: Props) {
+  const { state, frames, postMessage, postFiles, typing, loadOlder, loadNewer, jump, messageActions, scheduling, dismissNotice, givenBack } = useRoom(room.id, me, onSessionChanged, messageId);
+  // Schedule for later, in the room's composer and its thread's, each saying when a message it schedules will be sent.
+  const flash = useFlash();
+  const { scheduled } = state;
+  const composerScheduling = useMemo<ComposerScheduling>(
+    () => ({ ...scheduling, scheduled, onScheduled: (at) => flash("notice", `Your message will be sent ${sendAtLabel(at)}.`) }),
+    [scheduling, scheduled, flash],
+  );
+  // Slack's / commands, in the room's composer and its thread's.
+  const slash = useSlashCommands({ room, me, involvement, rooms, askForRoom, onFailed, onOpenDirects, onOpenShortcuts, onSend: (body) => postMessage(body) !== null });
+>>>>>>> ember/v0.5.0
   const nameOf = useNameOf();
   const name = roomName(room, me.id, nameOf);
   const direct = room.kind === "direct";
@@ -203,6 +260,9 @@ export function RoomView({ room, messageId, threadId, replyId, invitation, onDis
               onRunCommand={runCommand}
               onTyping={typing}
               onEditLastMessage={editLastMessage}
+              commands={slash.commands}
+              onCommand={slash.run}
+              scheduling={composerScheduling}
             />
           )}
         </MainContent>
@@ -221,6 +281,9 @@ export function RoomView({ room, messageId, threadId, replyId, invitation, onDis
           deleted={deleted}
           roomNotice={covered ? state.notice : null}
           onDismissRoomNotice={dismissNotice}
+          commands={slash.commands}
+          onCommand={slash.run}
+          scheduling={composerScheduling}
         />
       )}
       {pinsOpen && threadId === undefined && (

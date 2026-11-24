@@ -1,6 +1,37 @@
 import { AVATAR_PATH, type NewRoom, type ProfileAnswer, type Sidebar } from "@ember/protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+<<<<<<< HEAD
 import { ApiError, changeAvatar, changeBlock, changeRoom, createRoom, fetchMe, fetchNewRoomForm, fetchRoomSettings, fetchSidebar, forgetStoredSession, handleReport, joinWorkspace, listReports, removeAvatar, reportMessage, reportPerson, roomSocketUrl, setFavorite, setFavoriteOrder, setUpWorkspace, signOut, workspaceSocketUrl } from "./api";
+=======
+import {
+  ApiError,
+  changeAvatar,
+  changeBlock,
+  changeRoom,
+  createRoom,
+  createSection,
+  deleteSection,
+  fetchMe,
+  fetchNewRoomForm,
+  fetchRoomSettings,
+  fetchSidebar,
+  forgetStoredSession,
+  handleReport,
+  joinWorkspace,
+  listReports,
+  removeAvatar,
+  renameSection,
+  reportMessage,
+  reportPerson,
+  roomSocketUrl,
+  setFavorite,
+  setFavoriteOrder,
+  setSharedOrder,
+  setUpWorkspace,
+  signOut,
+  workspaceSocketUrl,
+} from "./api";
+>>>>>>> ember/v0.5.0
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -186,6 +217,29 @@ describe("Reorder starred rooms", () => {
     const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ favorites }));
     expect(await setFavoriteOrder(["r2", "r1"])).toEqual(favorites);
     expect(fetch).toHaveBeenLastCalledWith("/api/sidebar/order", expect.objectContaining({ method: "PUT", body: JSON.stringify({ roomIds: ["r2", "r1"] }) }));
+  });
+});
+
+describe("Sidebar sections", () => {
+  it("lays out the shared order with its sections, and makes, renames and deletes a section by its id, escaped", async () => {
+    const layout = { roomIds: ["r1", "r2"], sections: [{ id: "s1", roomIds: ["r2"] }] };
+    const saved = { sharedOrder: ["r1", "r2"], sections: [{ id: "s1", name: "Engineering", roomIds: ["r2"] }] };
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json(saved));
+    expect(await setSharedOrder(layout)).toEqual(saved);
+    expect(fetch).toHaveBeenLastCalledWith("/api/account/room_order", expect.objectContaining({ method: "PUT", body: JSON.stringify(layout) }));
+
+    fetch.mockResolvedValueOnce(Response.json({ section: { id: "s 2", name: "Sales" } }, { status: 201 }));
+    expect(await createSection("Sales")).toEqual({ id: "s 2", name: "Sales" });
+    expect(fetch).toHaveBeenLastCalledWith("/api/account/sections", expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "Sales" }) }));
+    fetch.mockResolvedValueOnce(Response.json({ section: { id: "s 2", name: "Revenue" } }));
+    expect(await renameSection("s 2", "Revenue")).toEqual({ id: "s 2", name: "Revenue" });
+    expect(fetch).toHaveBeenLastCalledWith("/api/account/sections/s%202", expect.objectContaining({ method: "PATCH", body: JSON.stringify({ name: "Revenue" }) }));
+    fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await deleteSection("s 2");
+    expect(fetch).toHaveBeenLastCalledWith("/api/account/sections/s%202", expect.objectContaining({ method: "DELETE" }));
+
+    fetch.mockResolvedValueOnce(Response.json({ error: "There's a section with that name already" }, { status: 409 }));
+    await expect(createSection("sales")).rejects.toMatchObject({ status: 409, message: "There's a section with that name already" });
   });
 });
 

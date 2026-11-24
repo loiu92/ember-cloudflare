@@ -1,8 +1,18 @@
 import { createElement, useContext, type ComponentProps, type ReactNode } from "react";
+<<<<<<< HEAD
 import { isAppPage, type GroupId, type User, type UserId } from "@ember/protocol";
 import { displayBody, type DisplayElement, type DisplayNode, type DisplayPreview } from "@ember/richtext/dom";
 import { PageLink } from "@/components/page-link";
 import { GroupsContext, mentionedPerson, PeopleContext } from "@/hooks/use-directory";
+=======
+import { isAppPage, type RoomId, type User, type UserId } from "@ember/protocol";
+import { displayBody, PRIVATE_ROOM_NAME, type DisplayElement, type DisplayNode, type DisplayPreview } from "@ember/richtext/dom";
+import { Lock } from "@/components/icons/iconoir";
+import { PageLink } from "@/components/page-link";
+import { mentionedPerson, PeopleContext } from "@/hooks/use-directory";
+import { roomPath } from "@/hooks/use-route";
+import { RoomsContext } from "@/hooks/use-rooms";
+>>>>>>> ember/v0.5.0
 import { cn } from "@/lib/utils";
 import { CodeBlock } from "./code-block";
 import { markedRanges, matchesIn, SearchMarks, type Matches } from "./search-marks";
@@ -60,7 +70,13 @@ export function MessageBody({ nodes, mentions, emoji = false, trailing, classNam
 function nodeOf(node: DisplayNode, mentions: User[], trailing?: ReactNode, inLink = false, matches: Matches | null = null): ReactNode {
   if (node.kind === "text") return markedRanges(node.value, matches?.get(node));
   if (node.kind === "mention") return createElement(Mention, { userId: node.userId, mentions, inLink });
+<<<<<<< HEAD
   if (node.kind === "group-mention") return createElement(GroupMention, { groupId: node.groupId });
+=======
+  // @here, @channel or @everyone, in semibold as a person's name is in a mention of them.
+  if (node.kind === "special-mention") return createElement("span", { className: "font-semibold" }, `@${node.mention}`);
+  if (node.kind === "room-mention") return createElement(RoomMention, { roomId: node.roomId, inLink });
+>>>>>>> ember/v0.5.0
   if (node.kind === "preview") return createElement(LinkPreview, { preview: node, mentions, inLink });
   const shown = TABLE_PARTS.has(node.name) ? node.children.filter((child) => child.kind !== "text" || child.value.trim() !== "") : node.children;
   const children = shown.map((child) => nodeOf(child, mentions, undefined, inLink || node.name === "a", matches));
@@ -98,6 +114,7 @@ function Mention({ userId, mentions, inLink }: { userId: UserId; mentions: User[
 }
 
 /**
+<<<<<<< HEAD
  * A mention of a user group, styled as a person's but without an avatar, since a group has no face of
  * its own: its name as the people directory lists it now, over a title naming everyone it stands for.
  * A group the directory doesn't list, as a deleted one's mention isn't, shows what an unknown person's
@@ -115,6 +132,30 @@ function GroupMention({ groupId }: { groupId: GroupId }) {
     <span className="relative inline-flex items-center leading-[1.1em] font-semibold" title={title}>
       {group.name}
     </span>
+=======
+ * A mention of a room, as Slack shows one of a channel: its name after a #, in semibold, linking to it, for
+ * someone in it, and for anyone else, a lock and "private room", which tells nothing of the room and goes
+ * nowhere, as the project's owner picked (2026-11-21). In a link, the name is only text, as a link can't
+ * hold another. Until the sidebar loads, which says who's in what, it's only the #.
+ */
+function RoomMention({ roomId, inLink }: { roomId: RoomId; inLink: boolean }) {
+  const rooms = useContext(RoomsContext);
+  if (rooms === null) return "#";
+  const room = rooms.get(roomId);
+  if (!room) {
+    return (
+      <span className="font-semibold whitespace-nowrap text-message-muted">
+        <Lock className="inline-block size-[1em] align-[-0.125em]" /> {PRIVATE_ROOM_NAME}
+      </span>
+    );
+  }
+  const name = `#${room.name}`;
+  if (inLink) return <span className="font-semibold">{name}</span>;
+  return (
+    <PageLink href={roomPath(room.id)} className="font-semibold no-underline hover:underline">
+      {name}
+    </PageLink>
+>>>>>>> ember/v0.5.0
   );
 }
 

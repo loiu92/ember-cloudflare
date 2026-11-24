@@ -12,7 +12,11 @@ import { apiWith, connect, freshRoom, objectSql, post, roomSql, roomStub, search
 
 /** The tables each kind of object keeps. A migration's new tables go under the scope it names. */
 const TABLES: Record<Exclude<Scope, "search">, string[]> = {
+<<<<<<< HEAD
   room: ["blobs", "boosts", "changed_huddles", "message_deletions", "messages", "pins", "revocations", "room_events", "unindexed_messages", "waiting_calls"],
+=======
+  room: ["blobs", "boosts", "changed_huddles", "message_deletions", "messages", "revocations", "room_events", "scheduled_messages", "unindexed_messages", "waiting_calls"],
+>>>>>>> ember/v0.5.0
   workspace: [
     "accounts",
     "agent_tools",
@@ -43,6 +47,7 @@ const TABLES: Record<Exclude<Scope, "search">, string[]> = {
     "pending_identities",
     "pending_picture_deletions",
     "pending_purges",
+    "pending_readers",
     "pending_reindexes",
     "pending_revocations",
     "profile_field_values",
@@ -54,6 +59,7 @@ const TABLES: Record<Exclude<Scope, "search">, string[]> = {
     "rooms",
     "saves",
     "searches",
+    "sections",
     "session_addresses",
     "sessions",
     "shortcuts",
@@ -72,8 +78,11 @@ const SEARCH_TABLES = [
   "search_index_data",
   "search_index_docsize",
   "search_index_idx",
+  "search_keys",
   "search_mentions",
   "search_messages",
+  "search_readers",
+  "search_rekeys",
   "search_rooms",
 ];
 
@@ -465,7 +474,7 @@ describe("Durable Object SQLite or D1", () => {
       }
       /** The numbers of general's messages that meet `filters`, newest first. */
       const numbers = (filters: Partial<IndexSearch> = {}) => {
-        const { sql: query, values } = searchStatement({ terms: "", roomIds: ["general"], sort: "newest", after: null, ...filters });
+        const { sql: query, values } = searchStatement({ words: [], roomIds: ["general"], searcherId: "ada", sort: "newest", after: null, ...filters }, []);
         return sql
           .exec<{ number: number }>(query, ...values)
           .toArray()

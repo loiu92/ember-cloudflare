@@ -1,5 +1,22 @@
 import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useReducer, useRef, useState } from "react";
+<<<<<<< HEAD
 import { CloseCode, parseServerFrame, type Account, type DirectoryUser, type HuddleSounds, type Me, type Reminder, type RoomId, type User, type UserId, type WorkspaceClientFrame, type WorkspaceServerFrame } from "@ember/protocol";
+=======
+import {
+  CloseCode,
+  parseServerFrame,
+  type Account,
+  type DirectoryUser,
+  type HuddleSounds,
+  type Me,
+  type RoomId,
+  type SectionId,
+  type User,
+  type UserId,
+  type WorkspaceClientFrame,
+  type WorkspaceServerFrame,
+} from "@ember/protocol";
+>>>>>>> ember/v0.5.0
 import { fetchMe, fetchSidebar, isSignedOut, workspaceSocketUrl, type SidebarCopy } from "@/lib/api";
 import type { InvitationsChange } from "@/lib/huddle-invitations";
 import { activeStore, watchUse } from "@/lib/presence";
@@ -22,8 +39,9 @@ const DEPLOY_SPREAD_MS = [2_000, 10_000] as const;
 
 /**
  * How long, at most, a tab waits to load its sidebar again once an administrator has put the rooms in
- * order for everyone, each tab waiting a while at random, so that every tab in the workspace doesn't ask
- * the Workspace at once.
+ * order for everyone, or changed the sections, or once a room of its is put in a section it hasn't
+ * heard of, each tab waiting a while at random, so that every tab in the workspace doesn't ask the
+ * Workspace at once.
  */
 export const RELOAD_SPREAD_MS = 5_000;
 
@@ -77,7 +95,8 @@ const isSame = (you: Me, me: Me) => you.id === me.id && you.name === me.name && 
  * tab is shown after more than a minute hidden too, as
  * `refresh-room:visible` reloads it (Campfire's users/sidebar_helper.rb), which Campfire does on a
  * room's page and this does on every page, and, its rooms only, a while after the socket says the shared
- * order has changed. Once it says this person has been given another role, it loads again with the
+ * order or the sections have changed, or puts a room in a section the list hasn't yet, which it adds
+ * after the others meanwhile. Once it says this person has been given another role, it loads again with the
  * people directory, which lists administrators more. It loads again at once after a list that may have
  * a room in the wrong place, one this person was taken out of and put back in while the list was on its
  * way. `refresh` asks for it again, settling once a list asked for since has come, or failing as that
@@ -136,6 +155,8 @@ export function useSidebar(
   const roomFrames = useRef({ count: 0, lastOf: new Map<RoomId, number>() });
   // How many of them have said which of a huddle's sounds this person hears.
   const soundFrames = useRef(0);
+  // How many of them have said what became of this person.
+  const youFrames = useRef(0);
   const [huddleChanges, huddlesChanged] = useReducer((heard: number) => heard + 1, 0);
   const [refresh] = useState(() => {
     // The last list the server sent, which it says is still current rather than send again.
@@ -184,6 +205,8 @@ export function useSidebar(
     if (user.id === me.id) signsIn({ id: user.id, name: user.name, administrator: user.role === "administrator" });
   });
   const hidden = useEffectEvent((userId: UserId) => directory.remove(userId));
+  // Whether the list has a section, or has yet to come, and so will.
+  const knowsSection = useEffectEvent((sectionId: SectionId) => !list || (list.sections ?? []).some((section) => section.id === sectionId));
 
   useEffect(() => {
     let closed = false;
@@ -251,7 +274,9 @@ export function useSidebar(
           return reload();
         case "room.saved":
           heardOf(frame.room.id);
-          return change({ type: "saved", room: frame.room });
+          // Where a section the list hasn't goes among the others, only the server's list says.
+          if (frame.section && !knowsSection(frame.section.id)) reloadRoomsSoon();
+          return change({ type: "saved", room: frame.room, ...(frame.section !== undefined && { section: frame.section }) });
         case "room.gone":
           heardOf(frame.roomId);
           gone(frame.roomId);
@@ -259,7 +284,7 @@ export function useSidebar(
           invitation({ type: "over", roomId: frame.roomId });
           return change({ type: "gone", roomId: frame.roomId });
         case "room.unread":
-          return change({ type: "marked", roomId: frame.roomId, at: frame.at, count: frame.count });
+          return change({ type: "marked", roomId: frame.roomId, at: frame.at, count: frame.count, mentions: frame.mentions });
         case "room.read":
           return change({ type: "marked", roomId: frame.roomId, at: null });
         case "room.active":
@@ -277,6 +302,7 @@ export function useSidebar(
           return huddlesChanged();
         case "user.updated":
           if (!isSomeoneElse(frame.user)) {
+            youFrames.current++;
             toldOf.you = true;
             // Only administrators are given the welcome card with their rooms, and told of the AI agents
             // only their direct messages reach, so a new role loads the rooms and the people again.
@@ -394,5 +420,19 @@ export function useSidebar(
     };
   }, []);
 
-  return { list, answered, change, refresh, askForRoom, askForHuddleSounds, active, huddleChanges, reportsHeard };
+  /**
+   * Called as this person pauses their notifications, or resumes them: what lists them in the people
+   * directory as the server answers, unless the workspace socket has said what became of them since,
+   * which the answer could undo, as with a pause ended in another tab just after. The socket brings this
+   * change too, in its turn.
+   */
+  const update = directory.update;
+  const askForYou = useCallback(() => {
+    const asked = youFrames.current;
+    return (you: DirectoryUser) => {
+      if (youFrames.current === asked) update(you);
+    };
+  }, [update]);
+
+  return { list, answered, change, refresh, askForRoom, askForHuddleSounds, askForYou, active, huddleChanges, reportsHeard };
 }

@@ -11,6 +11,7 @@ import {
   MIN_PASSWORD_LENGTH,
   sameMood,
   type AccountDeletion,
+  type DirectoryUser,
   type Me,
   type MemberfulStatus,
   type PersonMood,
@@ -46,6 +47,7 @@ import { ConversationNotifications } from "./conversation-notifications";
 import { DoNotDisturb } from "./do-not-disturb";
 import { DeleteAccount } from "./delete-account";
 import { HuddleSoundSwitches } from "./huddle-sound-switches";
+import { PauseNotifications } from "./pause-notifications";
 import { MemberfulConnection } from "./memberful-connection";
 import { InstallInstructions } from "./notification-help";
 import { HEADER_TEXT_BUTTON } from "./page-header";
@@ -75,6 +77,8 @@ interface Props {
   huddleSounds: HuddleSounds | null;
   /** Called as a switch saves one of a huddle's sounds, with what keeps the sounds the server answers. */
   askForHuddleSounds: () => (sounds: HuddleSounds) => void;
+  /** Called as Pause notifications pauses them, or resumes them, with what lists you in the people directory as the server answers. */
+  askForPause: () => (me: DirectoryUser) => void;
   /** Signs out, settling with whether it did. */
   onSignOut: () => Promise<boolean>;
   /** Deletes your account and goes to sign in, settling once it's deleted, or failing with why not. */
@@ -180,7 +184,11 @@ function disconnectsWithNewPassword(memberful: MemberfulStatus | null, sso: SsoS
  * the top bar. Go Back returns to the page it was opened from. Your avatar, name, username, bio and mood
  * reach everyone's open pages at once, through the workspace socket, as they reach the rail.
  */
+<<<<<<< HEAD
 export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndChanged, huddleSounds, askForHuddleSounds, onSignOut, onDeleteAccount, onFailed }: Props) {
+=======
+export function ProfilePage({ me, rooms, askForRoom, huddleSounds, askForHuddleSounds, askForPause, onSignOut, onDeleteAccount, onFailed }: Props) {
+>>>>>>> ember/v0.5.0
   const [fields, setFields] = useState<Fields | null>(null);
   /** The profile as the page last loaded or saved it. */
   const saved = useRef<Fields | null>(null);
@@ -618,7 +626,11 @@ export function ProfilePage({ me, rooms, askForRoom, dndUntil, askForDnd, onDndC
         {assistant && <AnswerLevels assistant={assistant} onChanged={setAssistant} onFailed={onFailed} />}
         {apps.length > 0 && <YourApps apps={apps} onChanged={setApps} onFailed={onFailed} />}
         {outsideAi && <YourOutsideAi connections={outsideAi} onChanged={setOutsideAi} onFailed={onFailed} />}
+<<<<<<< HEAD
         <DoNotDisturb dndUntil={dndUntil} askForDnd={askForDnd} onChanged={onDndChanged} onFailed={onFailed} />
+=======
+        <PauseNotifications meId={me.id} askForPause={askForPause} onFailed={onFailed} />
+>>>>>>> ember/v0.5.0
         {huddleSounds && <HuddleSoundSwitches sounds={huddleSounds} askForSounds={askForHuddleSounds} onFailed={onFailed} />}
         {rooms && <ConversationNotifications me={me} rooms={rooms} askForRoom={askForRoom} onFailed={onFailed} />}
         <BlockedPeople />

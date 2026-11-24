@@ -79,4 +79,9 @@ function isTemplate(element: globalThis.Element): element is HTMLTemplateElement
   return element.namespaceURI === HTML_NAMESPACE && element.localName === "template";
 }
 
+<<<<<<< HEAD
 export const { prepareBody, plainText, mentionedUsers, userIdsIn, groupIdsIn, writtenBody, editableBody, autoLink, displayBody, hasPreview } = withParser(parseDom);
+=======
+export const { prepareBody, plainText, mentionedUsers, userIdsIn, mentionsIn, roomIdsIn, writtenBody, editableBody, specialMentionsAsText, autoLink, displayBody, hasPreview } =
+  withParser(parseDom);
+>>>>>>> ember/v0.5.0
